@@ -1,0 +1,91 @@
+name: PanCheck CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  frontend-ci:
+    name: Frontend CI
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: 安装 pnpm
+        run: npm install -g pnpm
+
+      - name: 设置 pnpm 缓存
+        uses: actions/cache@v4
+        with:
+          path: ~/.pnpm-store
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: 安装前端依赖
+        run: |
+          cd frontend
+          pnpm install --frozen-lockfile
+
+      - name: 构建前端应用
+        run: |
+          cd frontend
+          pnpm run build
+
+  backend-ci:
+    name: Backend CI
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Go 环境
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+
+      - name: 安装 Go 依赖
+        run: go mod download
+
+      - name: Go 代码检查
+        run: |
+          go vet ./...
+          go fmt ./...
+
+      - name: Go 测试
+        run: go test -v ./...
+
+  docker-test:
+    name: Docker Build Test
+    runs-on: ubuntu-latest
+    needs: [frontend-ci, backend-ci]
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 构建 Docker 镜像
+        run: |
+          echo "Building Docker image..."
+          docker build -t pancheck:test .
+
+      - name: 验证 Docker 镜像
+        run: |
+          if docker images | grep pancheck; then
+            echo "Image found"
+          else
+            echo "Image not found"
+            docker images
+            exit 1
+          fi
