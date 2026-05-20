@@ -102,9 +102,70 @@ func (c *QuarkChecker) Check(link string) (*CheckResult, error) {
 
 	// 检查文件列表是否为空
 	if len(detailResponse.Data.List) == 0 {
+		// 文件列表为空时不一定是链接失效，需要结合share.status判断
+		share := detailResponse.Data.Share
+		if share.Status > 1 {
+			// status > 1 表示分享已失效/违规
+			if share.PartialViolation {
+				return &CheckResult{
+					Valid:         false,
+					FailureReason: "分享链接部分违规已失效(share_status=" + fmt.Sprintf("%d", share.Status) + ")",
+					Duration:      time.Since(start).Milliseconds(),
+				}, nil
+			}
+			return &CheckResult{
+				Valid:         false,
+				FailureReason: "分享链接已失效(share_status=" + fmt.Sprintf("%d", share.Status) + ")",
+				Duration:      time.Since(start).Milliseconds(),
+			}, nil
+		}
 		return &CheckResult{
 			Valid:         false,
 			FailureReason: "分享链接无效：文件列表为空",
+			Duration:      time.Since(start).Milliseconds(),
+		}, nil
+	}
+
+	// 文件列表非空时，进一步检查share状态
+	share := detailResponse.Data.Share
+	if share.Status == 1 {
+		if share.PartialViolation {
+			// status=1 且 partial_violation=true: 链接有效但部分文件违规
+			return &CheckResult{
+				Valid:         true,
+				FailureReason: "链接有效但部分文件违规",
+				Duration:      time.Since(start).Milliseconds(),
+			}, nil
+		}
+		return &CheckResult{
+			Valid:         true,
+			FailureReason: "",
+			Duration:      time.Since(start).Milliseconds(),
+		}, nil
+	}
+
+	if share.Status == 3 {
+		// status=3: 需要结合partial_violation判断
+		if share.PartialViolation {
+			return &CheckResult{
+				Valid:         false,
+				FailureReason: "分享链接因违规已失效(share_status=3, partial_violation=true)",
+				Duration:      time.Since(start).Milliseconds(),
+			}, nil
+		}
+		// status=3 且无违规，链接仍有效
+		return &CheckResult{
+			Valid:         true,
+			FailureReason: "",
+			Duration:      time.Since(start).Milliseconds(),
+		}, nil
+	}
+
+	// share.status > 1 且非3，一律失效
+	if share.Status > 1 {
+		return &CheckResult{
+			Valid:         false,
+			FailureReason: "分享链接已失效(share_status=" + fmt.Sprintf("%d", share.Status) + ")",
 			Duration:      time.Since(start).Milliseconds(),
 		}, nil
 	}
@@ -138,10 +199,20 @@ type quarkDetailResp struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Data    struct {
-		IsOwner int           `json:"is_owner"`
-		List    []interface{} `json:"list"`
+		IsOwner         int           `json:"is_owner"`
+		List            []interface{} `json:"list"`
+		Share           quarkShare    `json:"share"`
+		IsExpire        bool          `json:"is_expire"`
 	} `json:"data"`
 	Metadata map[string]interface{} `json:"metadata"`
+}
+
+// quarkShare 夸克分享详情中的share字段
+type quarkShare struct {
+	Status           int  `json:"status"`
+	PartialViolation bool `json:"partial_violation"`
+	ExpiredAt        int64 `json:"expired_at"`
+	ExpiredType      int  `json:"expired_type"`
 }
 
 // quarkRequest 获取夸克网盘分享信息

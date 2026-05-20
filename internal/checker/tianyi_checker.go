@@ -77,7 +77,11 @@ func (c *TianyiChecker) Check(link string) (*CheckResult, error) {
 	}
 
 	// shareId <= 0 或不存在，表示链接无效
-	failureReason := response.ResMessage
+	// 优先使用具体错误码生成失败原因
+	failureReason := mapTelecomErrorMessage(response.ErrorCode, response.ResMessage)
+	if failureReason == "" {
+		failureReason = response.ResMessage
+	}
 	if failureReason == "" {
 		failureReason = fmt.Sprintf("无法获取分享信息 (ShareId=%d)", response.ShareId)
 	}
@@ -92,7 +96,7 @@ func (c *TianyiChecker) Check(link string) (*CheckResult, error) {
 type TelecomResp struct {
 	ResCode        int    `json:"res_code"`
 	ResMessage     string `json:"res_message"`
-	ErrorCode      string `json:"-"`
+	ErrorCode      string `json:"error_code"`
 	FileName       string `json:"fileName"`
 	NeedAccessCode int    `json:"needAccessCode"` // 是否需要访问码：1表示需要，0表示不需要
 	ShareId        int64  `json:"shareId"`        // 分享ID，如果大于0表示链接有效
@@ -182,13 +186,42 @@ func telecomRequest(ctx context.Context, codeValue string, accessCode string, re
 		return nil, fmt.Errorf("解析JSON失败: %v", err)
 	}
 
+	// 如果 error_code 字段为空，尝试从响应体文本中扫描已知错误码
+	bodyStr := string(body)
+	if response.ErrorCode == "" {
+		knownErrorCodes := []string{
+			"ShareInfoNotFound",
+			"ShareNotFound",
+			"FileNotFound",
+			"ShareExpiredError",
+			"ShareAuditNotPass",
+			"FolderNotFound",
+		}
+		for _, code := range knownErrorCodes {
+			if strings.Contains(bodyStr, code) {
+				response.ErrorCode = code
+				break
+			}
+		}
+	}
+
 	return &response, nil
 }
 
 func mapTelecomErrorMessage(code string, fallback string) string {
 	switch code {
+	case "ShareInfoNotFound":
+		return "分享信息不存在"
+	case "ShareNotFound":
+		return "分享链接不存在"
+	case "FileNotFound":
+		return "分享文件不存在"
+	case "ShareExpiredError":
+		return "分享链接已过期"
 	case "ShareAuditNotPass":
 		return "分享因审核未通过已失效"
+	case "FolderNotFound":
+		return "分享文件夹不存在"
 	default:
 		if fallback != "" {
 			return fallback
