@@ -297,9 +297,19 @@ func extractCodeFromURL(urlStr string) (string, string, string, error) {
 	// 从URL文本中提取访问码（访问码：xxx）
 	// 支持格式：https://cloud.189.cn/t/xxx（访问码：xxx）
 	accessCodePattern := regexp.MustCompile(`（访问码[：:]\s*([a-zA-Z0-9]+)）`)
-	matches := accessCodePattern.FindStringSubmatch(urlStr)
+	decodedURL, decodeErr := url.QueryUnescape(urlStr)
+	if decodeErr != nil {
+		decodedURL = urlStr
+	}
+	matches := accessCodePattern.FindStringSubmatch(decodedURL)
 	if len(matches) >= 2 && matches[1] != "" {
 		accessCode = matches[1]
+	}
+	if accessCode == "" {
+		matches = accessCodePattern.FindStringSubmatch(urlStr)
+		if len(matches) >= 2 && matches[1] != "" {
+			accessCode = matches[1]
+		}
 	}
 
 	parsedInputURL, err := url.Parse(urlStr)
