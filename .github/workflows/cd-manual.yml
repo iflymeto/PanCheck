@@ -68,6 +68,7 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ env.repo_owner_lower }}/pancheck:v${{ env.VERSION }}
+            ghcr.io/${{ env.repo_owner_lower }}/pancheck:latest
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -102,6 +103,7 @@ jobs:
           push: true
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/pancheck:v${{ env.VERSION }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/pancheck:latest
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
