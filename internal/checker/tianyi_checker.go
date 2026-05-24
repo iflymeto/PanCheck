@@ -65,10 +65,15 @@ func (c *TianyiChecker) Check(link string) (*CheckResult, error) {
 		}, nil
 	}
 
-	// 判断链接是否有效：通过 shareId 来判断
-	// 如果 shareId > 0，说明能获取到分享信息，链接有效
-	// 注意：即使需要访问码，只要API能返回shareId，说明链接本身是有效的
 	if response.ShareId > 0 {
+		if response.NeedAccessCode == 1 && accessCode == "" {
+			return &CheckResult{
+				Valid:               true,
+				FailureReason:       "",
+				Duration:            duration,
+				IsPasswordProtected: true,
+			}, nil
+		}
 		return &CheckResult{
 			Valid:         true,
 			FailureReason: "",
@@ -246,39 +251,34 @@ func extractCodeFromURL(urlStr string) (string, string, string, error) {
 	var codeValue string
 	var accessCode string
 
-	// 首先尝试从查询参数中获取code
 	queryParams := parsedURL.Query()
 	codeValue = queryParams.Get("code")
 
-	// 如果查询参数中没有code，尝试从路径中提取（/t/xxx格式）
 	if codeValue == "" {
 		path := parsedURL.Path
-		// 匹配 /t/xxx 格式
 		if strings.HasPrefix(path, "/t/") {
 			codeValue = strings.TrimPrefix(path, "/t/")
-			// 移除路径中的其他部分（如果有）
 			if idx := strings.Index(codeValue, "/"); idx != -1 {
 				codeValue = codeValue[:idx]
 			}
+			codeValue = trimCodeValue(codeValue)
 		}
 	}
 
-	// 如果路径中也没有code，尝试从Fragment（hash）中提取（#/t/xxx格式）
 	if codeValue == "" && parsedURL.Fragment != "" {
 		fragment := parsedURL.Fragment
-		// 匹配 #/t/xxx 或 /t/xxx 格式（hash中可能包含或不包含#）
 		if strings.HasPrefix(fragment, "/t/") {
 			codeValue = strings.TrimPrefix(fragment, "/t/")
-			// 移除hash中的其他部分（如果有）
 			if idx := strings.Index(codeValue, "/"); idx != -1 {
 				codeValue = codeValue[:idx]
 			}
+			codeValue = trimCodeValue(codeValue)
 		} else if strings.HasPrefix(fragment, "#/t/") {
 			codeValue = strings.TrimPrefix(fragment, "#/t/")
-			// 移除hash中的其他部分（如果有）
 			if idx := strings.Index(codeValue, "/"); idx != -1 {
 				codeValue = codeValue[:idx]
 			}
+			codeValue = trimCodeValue(codeValue)
 		}
 	}
 
@@ -339,4 +339,15 @@ func containsSpecialChars(s string) bool {
 		}
 	}
 	return false
+}
+
+func trimCodeValue(code string) string {
+	end := len(code)
+	for i, r := range code {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
+			end = i
+			break
+		}
+	}
+	return code[:end]
 }

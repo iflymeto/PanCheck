@@ -103,12 +103,19 @@ func (c *Pan123Checker) Check(link string) (*CheckResult, error) {
 		}, nil
 	}
 
-	// 检查响应
-	if response.Code == 0 || response.Data.HasPwd {
+	if response.Code == 0 {
 		return &CheckResult{
 			Valid:         true,
 			FailureReason: "",
 			Duration:      time.Since(start).Milliseconds(),
+		}, nil
+	}
+	if response.Data.HasPwd {
+		return &CheckResult{
+			Valid:               true,
+			FailureReason:       "链接需要提取码",
+			Duration:            time.Since(start).Milliseconds(),
+			IsPasswordProtected: true,
 		}, nil
 	}
 

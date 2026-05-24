@@ -67,6 +67,22 @@ func (c *QuarkChecker) Check(link string) (*CheckResult, error) {
 
 	// 检查API响应状态
 	if response.Status != 200 || response.Code != 0 {
+		if response.Code == 41008 {
+			isLocked := passCode == ""
+			return &CheckResult{
+				Valid:               isLocked,
+				FailureReason:       "链接需要提取码",
+				Duration:            duration,
+				IsPasswordProtected: isLocked,
+			}, nil
+		}
+		if response.Code == 41004 || response.Code == 41010 || response.Code == 41011 {
+			return &CheckResult{
+				Valid:         false,
+				FailureReason: "提取码错误",
+				Duration:      duration,
+			}, nil
+		}
 		return &CheckResult{
 			Valid:         false,
 			FailureReason: "分享链接失效或不存在",

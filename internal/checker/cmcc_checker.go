@@ -27,7 +27,7 @@ func NewCMCCChecker(concurrencyLimit int, timeout time.Duration) *CMCCChecker {
 	// 2. https://caiyun.139.com/m/i?([^&]+)
 	return &CMCCChecker{
 		BaseChecker:  NewBaseChecker(model.PlatformCMCC, concurrencyLimit, timeout),
-		sharePattern: regexp.MustCompile(`https://(?:yun\.139\.com/shareweb/#/w/i/|caiyun\.139\.com/m/i\?)([^&]+)`),
+		sharePattern: regexp.MustCompile(`https://(?:yun\.139\.com/shareweb/#/w/i/|caiyun\.139\.com/m/i\?|caiyun\.139\.com/w/i/|caiyun\.feixin\.10086\.cn/[^/]*/i/)([^&/?#]+)`),
 	}
 }
 

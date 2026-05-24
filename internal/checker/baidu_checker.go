@@ -169,13 +169,15 @@ func (c *BaiduChecker) Check(link string) (*CheckResult, error) {
 
 	// 根据errno判断失败原因
 	failureReason := getFailureReason(errno, errMsg)
-	isRateLimited := errno == -62 // -62表示请求接口受限
+	isRateLimited := errno == -62
+	isPasswordProtected := isPasswordProtected(errno, password != "")
 
 	return &CheckResult{
-		Valid:         false,
-		FailureReason: failureReason,
-		Duration:      time.Since(start).Milliseconds(),
-		IsRateLimited: isRateLimited,
+		Valid:               false,
+		FailureReason:       failureReason,
+		Duration:            time.Since(start).Milliseconds(),
+		IsRateLimited:       isRateLimited,
+		IsPasswordProtected: isPasswordProtected,
 	}, nil
 }
 
@@ -349,4 +351,8 @@ func getFailureReason(errno float64, errMsg string) string {
 	default:
 		return fmt.Sprintf("分享链接无效 (errno: %.0f)", errno)
 	}
+}
+
+func isPasswordProtected(errno float64, hasPwd bool) bool {
+	return int(errno) == -12 && !hasPwd
 }

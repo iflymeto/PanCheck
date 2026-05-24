@@ -42,6 +42,7 @@ export function Home() {
         {result && (
           <ResultTable
             invalidLinks={result.invalid_links}
+            lockedLinks={result.locked_links}
             pendingLinks={result.pending_links}
             validLinks={result.valid_links}
             totalDuration={result.total_duration}

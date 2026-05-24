@@ -13,6 +13,7 @@ import type { LinkInfo } from '@/types';
 
 interface ResultTableProps {
   invalidLinks: string[];
+  lockedLinks: string[];
   pendingLinks: string[];
   validLinks: string[];
   totalDuration?: number;
@@ -22,6 +23,7 @@ interface ResultTableProps {
 
 export function ResultTable({
   invalidLinks,
+  lockedLinks,
   pendingLinks,
   validLinks,
   totalDuration,
@@ -30,6 +32,7 @@ export function ResultTable({
 }: ResultTableProps) {
   const allLinks: LinkInfo[] = [
     ...validLinks.map(link => ({ link, platform: parseLink(link), status: 'valid' as const })),
+    ...lockedLinks.map(link => ({ link, platform: parseLink(link), status: 'locked' as const })),
     ...invalidLinks.map(link => ({ link, platform: parseLink(link), status: 'invalid' as const })),
     ...pendingLinks.map(link => ({ link, platform: parseLink(link), status: 'pending' as const })),
   ];
@@ -51,6 +54,9 @@ export function ResultTable({
           <div className="flex gap-4 text-sm">
             <div className="text-green-600">
               有效: {validLinks.length}
+            </div>
+            <div className="text-amber-600">
+              需提取码: {lockedLinks.length}
             </div>
             <div className="text-red-600">
               失效: {invalidLinks.length}
@@ -94,6 +100,9 @@ export function ResultTable({
                 <TableCell>
                   {linkInfo.status === 'valid' && (
                     <span className="text-green-600">有效</span>
+                  )}
+                  {linkInfo.status === 'locked' && (
+                    <span className="text-amber-600">需提取码</span>
                   )}
                   {linkInfo.status === 'invalid' && (
                     <span className="text-red-600">失效</span>

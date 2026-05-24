@@ -12,6 +12,7 @@ type SubmissionRecord struct {
 	OriginalLinks     StringArray   `gorm:"type:json;not null" json:"original_links"`                  // 用户原始提交内容
 	PendingLinks      StringArray   `gorm:"type:json" json:"pending_links"`                            // 待检测的链接
 	ValidLinks        StringArray   `gorm:"type:json" json:"valid_links"`                              // 检测完成后的有效链接
+	LockedLinks       StringArray   `gorm:"type:json" json:"locked_links"`                             // 需要提取码但链接有效
 	SelectedPlatforms PlatformArray `gorm:"type:json" json:"selected_platforms"`                       // 用户提交时选择的网盘平台类型
 	Status            string        `gorm:"type:varchar(20);not null;default:'pending'" json:"status"` // pending/checked
 	TotalDuration     *int64        `gorm:"type:bigint" json:"total_duration"`                         // 总耗时（毫秒）

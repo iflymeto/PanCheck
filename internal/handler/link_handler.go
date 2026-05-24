@@ -94,9 +94,11 @@ func (h *LinkHandler) CheckLinks(c *gin.Context) {
 
 		// 更新响应：包含即时检测的结果
 		validLinksList := []string(record.ValidLinks)
+		lockedLinksList := []string(record.LockedLinks)
 		remainingPendingLinks := []string(record.PendingLinks)
 		resp.ValidLinks = validLinksList
-		resp.PendingLinks = remainingPendingLinks // 如果选择了全部平台，这里应该是空的
+		resp.LockedLinks = lockedLinksList
+		resp.PendingLinks = remainingPendingLinks
 		resp.TotalDuration = record.TotalDuration
 
 		// 计算新检测到的失效链接
@@ -111,6 +113,11 @@ func (h *LinkHandler) CheckLinks(c *gin.Context) {
 			validLinksMap[vl] = true
 		}
 
+		lockedLinksMap := make(map[string]bool)
+		for _, ll := range lockedLinksList {
+			lockedLinksMap[ll] = true
+		}
+
 		remainingPendingMap := make(map[string]bool)
 		for _, rpl := range remainingPendingLinks {
 			remainingPendingMap[rpl] = true
@@ -119,21 +126,16 @@ func (h *LinkHandler) CheckLinks(c *gin.Context) {
 		// 从原始待检测链接中找出失效的
 		newInvalidLinks := make([]string, 0)
 		for _, pendingLink := range originalPendingLinks {
-			// 解析链接获取平台（ParseLink 会规范化链接）
 			linkInfo := validator.ParseLink(pendingLink)
 			normalizedLink := linkInfo.Link
 
 			if selectedAllPlatforms {
-				// 如果选择了全部平台，所有链接都应该被检测过
-				// 如果不在有效链接中，也不在剩余待检测链接中，说明是新检测到的失效链接
-				if !validLinksMap[normalizedLink] && !remainingPendingMap[normalizedLink] && !knownInvalidMap[normalizedLink] {
+				if !validLinksMap[normalizedLink] && !lockedLinksMap[normalizedLink] && !remainingPendingMap[normalizedLink] && !knownInvalidMap[normalizedLink] {
 					newInvalidLinks = append(newInvalidLinks, normalizedLink)
 				}
 			} else {
-				// 如果链接属于选中的平台，且已经检测过（不在 remainingPendingLinks 中）
 				if selectedPlatformMap[linkInfo.Platform] && !remainingPendingMap[normalizedLink] {
-					// 如果不在有效链接中，也不在已知失效链接中，说明是新检测到的失效链接
-					if !validLinksMap[normalizedLink] && !knownInvalidMap[normalizedLink] {
+					if !validLinksMap[normalizedLink] && !lockedLinksMap[normalizedLink] && !knownInvalidMap[normalizedLink] {
 						newInvalidLinks = append(newInvalidLinks, normalizedLink)
 					}
 				}
