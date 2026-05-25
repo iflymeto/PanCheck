@@ -394,9 +394,20 @@ func (c *XunleiChecker) Check(link string) (*CheckResult, error) {
 		shareStatusText = fmt.Sprintf("分享状态: %s", shareStatus)
 	}
 
+	isPasswordProtected := false
+	if errorDesc, ok := apiResp["error_description"].(string); ok {
+		if strings.Contains(errorDesc, "提取码") || strings.Contains(errorDesc, "pass_code") {
+			isPasswordProtected = true
+		}
+	}
+	if !isPasswordProtected && (strings.Contains(shareStatusText, "提取码") || strings.Contains(shareStatusText, "pass_code")) {
+		isPasswordProtected = true
+	}
+
 	return &CheckResult{
-		Valid:         false,
-		FailureReason: shareStatusText,
-		Duration:      time.Since(start).Milliseconds(),
+		Valid:               isPasswordProtected,
+		FailureReason:       shareStatusText,
+		Duration:            time.Since(start).Milliseconds(),
+		IsPasswordProtected: isPasswordProtected,
 	}, nil
 }

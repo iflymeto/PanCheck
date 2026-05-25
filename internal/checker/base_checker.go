@@ -3,6 +3,7 @@ package checker
 import (
 	"PanCheck/internal/config"
 	"PanCheck/internal/model"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -13,6 +14,7 @@ type BaseChecker struct {
 	concurrencyLimit int
 	timeout          time.Duration
 	rateConfig       *config.PlatformRateConfig
+	httpClient       *http.Client
 
 	// 频率控制相关
 	lastRequestTime time.Time
@@ -86,7 +88,19 @@ func NewBaseChecker(platform model.Platform, concurrencyLimit int, timeout time.
 		concurrencyLimit: concurrencyLimit,
 		timeout:          timeout,
 		lastRequestTime:  time.Now(),
+		httpClient: &http.Client{
+			Timeout: timeout,
+			Transport: &http.Transport{
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		},
 	}
+}
+
+// GetHTTPClient 返回共享的 HTTP 客户端
+func (b *BaseChecker) GetHTTPClient() *http.Client {
+	return b.httpClient
 }
 
 // SetRateConfig 设置频率配置
@@ -128,25 +142,27 @@ func (b *BaseChecker) ApplyRateLimit() {
 		return
 	}
 
-	b.requestMutex.Lock()
-	defer b.requestMutex.Unlock()
-
-	// 应用请求间隔
+	// 应用请求间隔：计算需要等待的时长，释放锁后再 Sleep
 	if b.rateConfig.RequestDelayMs > 0 {
+		b.requestMutex.Lock()
 		elapsed := time.Since(b.lastRequestTime)
 		requiredDelay := time.Duration(b.rateConfig.RequestDelayMs) * time.Millisecond
+		b.requestMutex.Unlock()
+
 		if elapsed < requiredDelay {
 			time.Sleep(requiredDelay - elapsed)
 		}
 	}
 
-	// 应用令牌桶限制
+	// 应用令牌桶限制（令牌桶有自己的 mutex）
 	if b.tokenBucket != nil {
 		for !b.tokenBucket.Take() {
-			// 等待令牌可用
 			time.Sleep(b.tokenBucket.refillRate)
 		}
 	}
 
+	// 更新最后请求时间
+	b.requestMutex.Lock()
 	b.lastRequestTime = time.Now()
+	b.requestMutex.Unlock()
 }

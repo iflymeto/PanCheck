@@ -102,7 +102,12 @@ func extractParamsAliPan(urlStr string) (string, error) {
 
 // aliPanResp 阿里云盘API响应结构
 type aliPanResp struct {
-	ShareTitle string `json:"share_title"`
+	ShareTitle  string `json:"share_title"`
+	Code        string `json:"code"`
+	Message     string `json:"message"`
+	FileCount   int    `json:"file_count"`
+	ShareName   string `json:"share_name"`
+	ShareStatus string `json:"share_status"`
 }
 
 // aliPanRequest 发起API请求并获取分享信息
@@ -160,6 +165,27 @@ func aliPanRequest(ctx context.Context, shareID string, rateConfig *config.Platf
 	var response aliPanResp
 	if err = json.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("解析JSON失败: %v", err)
+	}
+
+	// 检查响应体中的业务错误码（阿里云盘可能返回HTTP 200但body中含错误信息）
+	if response.Code != "" {
+		// ShareLink* 类错误码表示分享链接异常（如 ShareLinkForbidden, ShareLinkCanceled 等）
+		if strings.Contains(response.Code, "ShareLink") {
+			return nil, fmt.Errorf("分享链接失效: %s", response.Message)
+		}
+		// ExceedFrequencyLimit 等限流错误
+		if strings.Contains(response.Code, "Exceed") {
+			return &aliPanResp{}, nil
+		}
+		// 其他错误码
+		if response.Code != "" {
+			return nil, fmt.Errorf("分享链接异常(%s): %s", response.Code, response.Message)
+		}
+	}
+
+	// file_count 为 0 表示分享内容为空（链接本身可能有效但无文件）
+	if response.FileCount == 0 && response.ShareName == "" {
+		return nil, fmt.Errorf("分享内容为空(file_count=0)")
 	}
 
 	return &response, nil

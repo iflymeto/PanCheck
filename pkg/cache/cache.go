@@ -16,6 +16,8 @@ import (
 type CacheRepository interface {
 	// Get 从缓存获取检测结果
 	Get(ctx context.Context, link string) (*checker.CheckResult, error)
+	// MGet 批量从缓存获取检测结果，返回 map[link]*CheckResult（未命中的链接不在map中）
+	MGet(ctx context.Context, links []string) (map[string]*checker.CheckResult, error)
 	// Set 存入缓存，根据有效/无效和平台设置不同TTL
 	Set(ctx context.Context, link string, result *checker.CheckResult, platform model.Platform, invalidTTL int, platformTTLMap map[model.Platform]int) error
 	// Delete 删除缓存
@@ -24,6 +26,43 @@ type CacheRepository interface {
 	Close() error
 	// IsEnabled 检查缓存是否启用
 	IsEnabled() bool
+}
+
+// MGet 批量从缓存获取检测结果
+func (r *redisCacheRepository) MGet(ctx context.Context, links []string) (map[string]*checker.CheckResult, error) {
+	if !r.IsEnabled() || len(links) == 0 {
+		return make(map[string]*checker.CheckResult), nil
+	}
+
+	keys := make([]string, len(links))
+	for i, link := range links {
+		keys[i] = fmt.Sprintf("link:check:%s", link)
+	}
+
+	vals, err := r.client.MGet(ctx, keys...).Result()
+	if err != nil && err != redis.Nil {
+		log.Printf("Failed to MGet cache for %d links: %v", len(links), err)
+		return make(map[string]*checker.CheckResult), err
+	}
+
+	results := make(map[string]*checker.CheckResult, len(links))
+	for i, val := range vals {
+		if val == nil {
+			continue
+		}
+		strVal, ok := val.(string)
+		if !ok {
+			continue
+		}
+		var result checker.CheckResult
+		if err := json.Unmarshal([]byte(strVal), &result); err != nil {
+			log.Printf("Failed to unmarshal cache result for link %s: %v", links[i], err)
+			continue
+		}
+		results[links[i]] = &result
+	}
+
+	return results, nil
 }
 
 // CacheConfig Redis缓存配置

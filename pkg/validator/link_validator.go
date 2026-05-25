@@ -27,9 +27,9 @@ func ParseLink(link string) LinkInfo {
 		model.PlatformTianyi: regexp.MustCompile(`(?i)(?:https?://)?(?:cloud\.189\.cn|h5\.cloud\.189\.cn)/(?:t/[a-zA-Z0-9]+|web/share\?code=[a-zA-Z0-9]+|share\.html#/t/[a-zA-Z0-9]+)`),
 		model.PlatformPan123: regexp.MustCompile(`(?i)(?:https?://)?(?:123pan\.com|123pan\.cn|123684\.com|123685\.com|123912\.com|123592\.com|123865\.com)/s/[a-zA-Z0-9-]+`),
 		model.PlatformPan115: regexp.MustCompile(`(?i)(?:https?://)?(?:115\.com|115cdn\.com|anxia\.com)/s/[a-zA-Z0-9]+`),
-		model.PlatformAliyun: regexp.MustCompile(`(?i)(?:https?://)?(?:www\.aliyundrive\.com|aliyundrive\.com|www\.alipan\.com)/s/[a-zA-Z0-9]+`),
+		model.PlatformAliyun: regexp.MustCompile(`(?i)(?:https?://)?(?:www\.aliyundrive\.com|aliyundrive\.com|www\.alipan\.com|alipan\.com)/s/[a-zA-Z0-9]+`),
 		model.PlatformXunlei: regexp.MustCompile(`(?i)(?:https?://)?(?:pan\.xunlei\.com)/s/[a-zA-Z0-9_-]+`),
-		model.PlatformCMCC:   regexp.MustCompile(`(?i)(?:https?://)?(?:yun\.139\.com/shareweb/#/w/i/|caiyun\.139\.com/m/i\?)[a-zA-Z0-9]+`),
+		model.PlatformCMCC:   regexp.MustCompile(`(?i)(?:https?://)?(?:yun\.139\.com/shareweb/#/w/i/|caiyun\.139\.com/m/i\?|caiyun\.139\.com/w/i/|caiyun\.feixin\.10086\.cn/[^/]*/i/)[a-zA-Z0-9]+`),
 	}
 
 	for platform, pattern := range patterns {

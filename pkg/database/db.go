@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"time"
 
 	"PanCheck/internal/model"
 
@@ -30,13 +31,24 @@ type Config struct {
 
 // Init 初始化数据库连接
 func Init(config Config) error {
-	// 先确保数据库存在
+	var lastErr error
+	for attempt := 1; attempt <= 30; attempt++ {
+		lastErr = tryInit(config)
+		if lastErr == nil {
+			return nil
+		}
+		log.Printf("Database init attempt %d/30 failed: %v, retrying in 2s...", attempt, lastErr)
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("failed to initialize database after 30 retries: %w", lastErr)
+}
+
+func tryInit(config Config) error {
 	if err := ensureDatabase(config); err != nil {
 		return fmt.Errorf("failed to ensure database exists: %w", err)
 	}
 
 	var dialector gorm.Dialector
-	var err error
 
 	dsn := ""
 	switch config.Type {
@@ -55,6 +67,7 @@ func Init(config Config) error {
 		return fmt.Errorf("unsupported database type: %s", config.Type)
 	}
 
+	var err error
 	DB, err = gorm.Open(dialector, &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Info),
 	})
@@ -62,9 +75,7 @@ func Init(config Config) error {
 		return fmt.Errorf("failed to connect database: %w", err)
 	}
 
-	// 自动迁移
-	err = AutoMigrate()
-	if err != nil {
+	if err = AutoMigrate(); err != nil {
 		return fmt.Errorf("failed to auto migrate: %w", err)
 	}
 

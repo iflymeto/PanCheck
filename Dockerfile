@@ -26,7 +26,7 @@ RUN pnpm run build
 # ====================================================================
 # 第二阶段：构建 Go 后端
 # ====================================================================
-FROM golang:1.24-alpine AS backend-builder
+FROM golang:1.25-alpine AS backend-builder
 
 # 安装构建工具
 RUN apk add --no-cache gcc g++ musl-dev

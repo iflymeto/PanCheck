@@ -20,11 +20,12 @@ export interface CheckLinksRequest {
 export interface CheckLinksResponse {
   submission_id: number;
   invalid_links: string[];
+  locked_links: string[];
   pending_links: string[];
   valid_links: string[];
   total_duration?: number;
-  invalid_format_count: number; // 不规范链接数量
-  duplicate_count: number; // 重复链接数量
+  invalid_format_count: number;
+  duplicate_count: number;
 }
 
 export interface SubmissionRecord {
@@ -52,6 +53,6 @@ export interface SubmissionRecord {
 export interface LinkInfo {
   link: string;
   platform: Platform;
-  status?: 'valid' | 'invalid' | 'pending';
+  status?: 'valid' | 'invalid' | 'pending' | 'locked';
 }
 

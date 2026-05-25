@@ -14,18 +14,21 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 // CheckerService 检测服务
 type CheckerService struct {
-	checkerFactory  *checker.CheckerFactory
-	submissionRepo  *repository.SubmissionRepository
-	invalidLinkRepo *repository.InvalidLinkRepository
-	settingsRepo    *repository.SettingsRepository
-	cacheRepo       cache.CacheRepository
-	invalidTTL      int                    // 无效链接缓存过期时间（小时）
-	platformTTLMap  map[model.Platform]int // 平台缓存TTL映射
-	ttlMu           sync.RWMutex           // 保护TTL配置的读写锁
+	checkerFactory   *checker.CheckerFactory
+	submissionRepo   *repository.SubmissionRepository
+	invalidLinkRepo  *repository.InvalidLinkRepository
+	settingsRepo     *repository.SettingsRepository
+	cacheRepo        cache.CacheRepository
+	invalidTTL       int                    // 无效链接缓存过期时间（小时）
+	platformTTLMap   map[model.Platform]int // 平台缓存TTL映射
+	ttlMu            sync.RWMutex           // 保护TTL配置的读写锁
+	checkGroup       singleflight.Group     // 合并同一链接的并发检测请求
 }
 
 // NewCheckerService 创建检测服务
@@ -123,6 +126,7 @@ func (s *CheckerService) CheckRealtime(submissionID uint, links []string) (*mode
 		duration := time.Since(startTime).Milliseconds()
 		now := time.Now()
 		record.ValidLinks = model.StringArray([]string{})
+		record.LockedLinks = model.StringArray([]string{})
 		record.PendingLinks = model.StringArray([]string{})
 		record.Status = "checked"
 		record.TotalDuration = &duration
@@ -161,6 +165,7 @@ func (s *CheckerService) CheckRealtime(submissionID uint, links []string) (*mode
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	validLinks := make([]string, 0)
+	lockedLinks := make([]string, 0)
 	invalidLinks := make([]model.InvalidLink, 0)
 	validLinks = append(validLinks, disabledPlatformLinks...)
 
@@ -204,7 +209,7 @@ func (s *CheckerService) CheckRealtime(submissionID uint, links []string) (*mode
 				wg.Done()
 			}()
 			log.Printf("CheckRealtime: Starting goroutine for platform %s", p)
-			s.checkLinksWithConcurrency(context.Background(), ch, plinks, limit, &mu, &validLinks, &invalidLinks, submissionID)
+			s.checkLinksWithConcurrency(context.Background(), ch, plinks, limit, &mu, &validLinks, &lockedLinks, &invalidLinks, submissionID)
 			log.Printf("CheckRealtime: Completed goroutine for platform %s", p)
 		}(platform, platformLinks, linkChecker, concurrencyLimit)
 	}
@@ -248,7 +253,7 @@ func (s *CheckerService) CheckRealtime(submissionID uint, links []string) (*mode
 	now := time.Now()
 
 	record.ValidLinks = model.StringArray(validLinks)
-	// 检测完所有链接后，清空待检测链接（因为所有链接都已被处理）
+	record.LockedLinks = model.StringArray(lockedLinks)
 	record.PendingLinks = model.StringArray([]string{})
 	record.Status = "checked"
 	record.TotalDuration = &duration
@@ -268,11 +273,9 @@ func (s *CheckerService) CheckRealtime(submissionID uint, links []string) (*mode
 
 	// 保存失效链接
 	log.Printf("CheckRealtime: Saving %d invalid links for submission %d", len(invalidLinks), submissionID)
-	for _, il := range invalidLinks {
-		err = s.invalidLinkRepo.CreateOrUpdate(&il)
-		if err != nil {
-			// 记录错误但不影响主流程
-			log.Printf("CheckRealtime: Failed to save invalid link %s: %v", il.Link, err)
+	if len(invalidLinks) > 0 {
+		if err := s.invalidLinkRepo.BatchUpsert(invalidLinks); err != nil {
+			log.Printf("CheckRealtime: Failed to batch save invalid links for submission %d: %v", submissionID, err)
 		}
 	}
 
@@ -340,6 +343,7 @@ func (s *CheckerService) CheckRealtimeWithPlatformFilter(submissionID uint, link
 		duration := time.Since(startTime).Milliseconds()
 		now := time.Now()
 		record.ValidLinks = model.StringArray([]string{})
+		record.LockedLinks = model.StringArray([]string{})
 		record.PendingLinks = model.StringArray([]string{})
 		record.Status = "checked"
 		record.TotalDuration = &duration
@@ -387,6 +391,7 @@ func (s *CheckerService) CheckRealtimeWithPlatformFilter(submissionID uint, link
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	validLinks := make([]string, 0)
+	lockedLinks := make([]string, 0)
 	invalidLinks := make([]model.InvalidLink, 0)
 	validLinks = append(validLinks, disabledPlatformLinks...)
 
@@ -394,7 +399,6 @@ func (s *CheckerService) CheckRealtimeWithPlatformFilter(submissionID uint, link
 	for platform, platformLinks := range linksByPlatform {
 		linkChecker, ok := s.checkerFactory.GetChecker(platform)
 		if !ok {
-			// 没有检测器，标记为无效
 			mu.Lock()
 			for _, link := range platformLinks {
 				invalidLinks = append(invalidLinks, model.InvalidLink{
@@ -410,17 +414,15 @@ func (s *CheckerService) CheckRealtimeWithPlatformFilter(submissionID uint, link
 			continue
 		}
 
-		// 获取并发限制
 		concurrencyLimit := linkChecker.GetConcurrencyLimit()
 		if concurrencyLimit <= 0 {
-			concurrencyLimit = 5 // 默认值
+			concurrencyLimit = 5
 		}
 
-		// 使用worker pool模式
 		wg.Add(1)
 		go func(p model.Platform, plinks []string, ch checker.LinkChecker, limit int) {
 			defer wg.Done()
-			s.checkLinksWithConcurrency(context.Background(), ch, plinks, limit, &mu, &validLinks, &invalidLinks, submissionID)
+			s.checkLinksWithConcurrency(context.Background(), ch, plinks, limit, &mu, &validLinks, &lockedLinks, &invalidLinks, submissionID)
 		}(platform, platformLinks, linkChecker, concurrencyLimit)
 	}
 
@@ -442,9 +444,8 @@ func (s *CheckerService) CheckRealtimeWithPlatformFilter(submissionID uint, link
 	duration := time.Since(startTime).Milliseconds()
 	now := time.Now()
 
-	// 更新有效链接（只包含检测过的）
 	record.ValidLinks = model.StringArray(validLinks)
-	// 更新待检测链接：保留未选中平台的链接、未识别的链接
+	record.LockedLinks = model.StringArray(lockedLinks)
 	remainingPendingLinks := make([]string, 0)
 	remainingPendingLinks = append(remainingPendingLinks, skippedLinks...)
 	remainingPendingLinks = append(remainingPendingLinks, unknownLinks...)
@@ -471,11 +472,9 @@ func (s *CheckerService) CheckRealtimeWithPlatformFilter(submissionID uint, link
 
 	// 保存失效链接
 	log.Printf("CheckRealtimeWithPlatformFilter: Saving %d invalid links for submission %d", len(invalidLinks), submissionID)
-	for _, il := range invalidLinks {
-		err = s.invalidLinkRepo.CreateOrUpdate(&il)
-		if err != nil {
-			// 记录错误但不影响主流程
-			log.Printf("CheckRealtimeWithPlatformFilter: Failed to save invalid link %s: %v", il.Link, err)
+	if len(invalidLinks) > 0 {
+		if err := s.invalidLinkRepo.BatchUpsert(invalidLinks); err != nil {
+			log.Printf("CheckRealtimeWithPlatformFilter: Failed to batch save invalid links for submission %d: %v", submissionID, err)
 		}
 	}
 
@@ -515,6 +514,7 @@ func (s *CheckerService) checkLinksWithConcurrency(
 	concurrencyLimit int,
 	mu *sync.Mutex,
 	validLinks *[]string,
+	lockedLinks *[]string,
 	invalidLinks *[]model.InvalidLink,
 	submissionID uint,
 ) {
@@ -523,17 +523,57 @@ func (s *CheckerService) checkLinksWithConcurrency(
 		platform, submissionID, len(links), concurrencyLimit)
 
 	startTime := time.Now()
+
+	// 批量预查询：规范化所有链接
+	normalizedLinks := make([]string, len(links))
+	for i, link := range links {
+		linkInfo := validator.ParseLink(link)
+		normalizedLinks[i] = linkInfo.Link
+	}
+
+	// 1. 批量查询Redis缓存
+	cachedResults := make(map[string]*checker.CheckResult)
+	if s.cacheRepo != nil && s.cacheRepo.IsEnabled() {
+		mgetResults, mgetErr := s.cacheRepo.MGet(ctx, normalizedLinks)
+		if mgetErr != nil {
+			log.Printf("checkLinksWithConcurrency: Batch Redis MGet failed for platform %s: %v", platform, mgetErr)
+		} else {
+			cachedResults = mgetResults
+			log.Printf("checkLinksWithConcurrency: Redis MGet completed for platform %s, cache hits: %d/%d",
+				platform, len(cachedResults), len(normalizedLinks))
+		}
+	}
+
+	// 2. 批量查询失效链接数据库（只查缓存未命中的链接）
+	dbInvalidLinks := make(map[string]*model.InvalidLink)
+	missedLinks := make([]string, 0, len(normalizedLinks))
+	for _, nl := range normalizedLinks {
+		if _, cached := cachedResults[nl]; !cached {
+			missedLinks = append(missedLinks, nl)
+		}
+	}
+	if len(missedLinks) > 0 {
+		dbResults, dbErr := s.invalidLinkRepo.FindByLinksNonRateLimited(missedLinks)
+		if dbErr != nil {
+			log.Printf("checkLinksWithConcurrency: Batch DB query failed for platform %s: %v", platform, dbErr)
+		} else {
+			dbInvalidLinks = dbResults
+			log.Printf("checkLinksWithConcurrency: DB batch query completed for platform %s, hits: %d/%d",
+				platform, len(dbInvalidLinks), len(missedLinks))
+		}
+	}
+
 	// 创建worker pool
 	sem := make(chan struct{}, concurrencyLimit)
 	var wg sync.WaitGroup
 	checkedCount := 0
 	var checkedMu sync.Mutex
 
-	for _, link := range links {
+	for i, link := range links {
 		wg.Add(1)
 		sem <- struct{}{} // 获取信号量
 
-		go func(l string) {
+		go func(l string, normalizedLink string) {
 			defer func() {
 				wg.Done()
 				<-sem // 释放信号量
@@ -541,7 +581,6 @@ func (s *CheckerService) checkLinksWithConcurrency(
 				checkedCount++
 				currentCount := checkedCount
 				checkedMu.Unlock()
-				// 每检测10个链接输出一次进度
 				if currentCount%10 == 0 || currentCount == len(links) {
 					log.Printf("checkLinksWithConcurrency: Platform %s, submission %d, progress: %d/%d",
 						platform, submissionID, currentCount, len(links))
@@ -554,54 +593,43 @@ func (s *CheckerService) checkLinksWithConcurrency(
 				}
 			}()
 
-			// 规范化链接
-			linkInfo := validator.ParseLink(l)
-			normalizedLink := linkInfo.Link
-
 			var result *checker.CheckResult
 			var err error
 			var fromCache bool
 
-			// 1. 先查询Redis缓存
-			if s.cacheRepo != nil && s.cacheRepo.IsEnabled() {
-				cachedResult, cacheErr := s.cacheRepo.Get(ctx, normalizedLink)
-				if cacheErr == nil && cachedResult != nil {
-					result = cachedResult
-					fromCache = true
-					log.Printf("checkLinksWithConcurrency: Cache hit for link %s (platform %s)", normalizedLink, platform)
-				}
+			if cachedResult, ok := cachedResults[normalizedLink]; ok {
+				result = cachedResult
+				fromCache = true
 			}
 
-			// 2. 缓存未命中，查询无效链接数据库
 			if result == nil {
-				exists, dbErr := s.invalidLinkRepo.Exists(normalizedLink)
-				if dbErr == nil && exists {
-					// 从数据库查询详细信息
-					invalidLinks, dbErr := s.invalidLinkRepo.FindByLinks([]string{normalizedLink})
-					if dbErr == nil && len(invalidLinks) > 0 {
-						il := invalidLinks[0]
-						var duration int64
-						if il.CheckDuration != nil {
-							duration = *il.CheckDuration
-						}
-						result = &checker.CheckResult{
-							Valid:         false,
-							FailureReason: il.FailureReason,
-							Duration:      duration,
-							IsRateLimited: il.IsRateLimited,
-						}
-						log.Printf("checkLinksWithConcurrency: Found invalid link in database: %s (platform %s)", normalizedLink, platform)
+				if il, ok := dbInvalidLinks[normalizedLink]; ok {
+					var duration int64
+					if il.CheckDuration != nil {
+						duration = *il.CheckDuration
 					}
+					result = &checker.CheckResult{
+						Valid:               false,
+						FailureReason:       il.FailureReason,
+						Duration:            duration,
+						IsRateLimited:       il.IsRateLimited,
+					IsPasswordProtected: il.IsPasswordProtected,
+				}
 				}
 			}
 
-			// 3. 缓存和数据库都未命中，调用网盘接口检测
 			if result == nil {
-				result, err = ch.Check(l)
+				v, errSF, _ := s.checkGroup.Do(normalizedLink, func() (interface{}, error) {
+					return ch.Check(l)
+				})
+				if errSF != nil {
+					err = errSF
+				}
+				if v != nil {
+					result = v.(*checker.CheckResult)
+				}
 				if err != nil {
-					// 检查是否为429错误（频率限制错误）
 					if apphttp.IsRateLimitError(err) {
-						// 429错误也要保存到invalid_links表，标记IsRateLimited为true
 						var duration int64
 						if result != nil {
 							duration = result.Duration
@@ -617,9 +645,7 @@ func (s *CheckerService) checkLinksWithConcurrency(
 							CreatedAt:     time.Now(),
 						})
 						mu.Unlock()
-						log.Printf("检测链接时遇到频率限制（429错误），已保存到数据库: %s, 平台: %s, 错误: %v", normalizedLink, ch.GetPlatform(), err)
 
-						// 存入缓存
 						if s.cacheRepo != nil && s.cacheRepo.IsEnabled() {
 							rateLimitResult := &checker.CheckResult{
 								Valid:         false,
@@ -638,7 +664,6 @@ func (s *CheckerService) checkLinksWithConcurrency(
 						return
 					}
 
-					// 其他检测错误，视为无效
 					var duration int64
 					var isRateLimited bool
 					if result != nil {
@@ -657,7 +682,6 @@ func (s *CheckerService) checkLinksWithConcurrency(
 					})
 					mu.Unlock()
 
-					// 存入缓存
 					if s.cacheRepo != nil && s.cacheRepo.IsEnabled() {
 						errorResult := &checker.CheckResult{
 							Valid:         false,
@@ -687,67 +711,27 @@ func (s *CheckerService) checkLinksWithConcurrency(
 					log.Printf("Failed to cache result for link %s: %v", normalizedLink, cacheErr)
 				}
 			}
-			if err != nil {
-				// 检查是否为429错误（频率限制错误）
-				if apphttp.IsRateLimitError(err) {
-					// 429错误也要保存到invalid_links表，标记IsRateLimited为true
-					var duration int64
-					if result != nil {
-						duration = result.Duration
-					}
-					mu.Lock()
-					*invalidLinks = append(*invalidLinks, model.InvalidLink{
-						Link:          l,
-						Platform:      ch.GetPlatform(),
-						FailureReason: fmt.Sprintf("API频率限制（429错误）: %v", err),
-						CheckDuration: &duration,
-						IsRateLimited: true,
-						SubmissionID:  &submissionID,
-						CreatedAt:     time.Now(),
-					})
-					mu.Unlock()
-					log.Printf("检测链接时遇到频率限制（429错误），已保存到数据库: %s, 平台: %s, 错误: %v", l, ch.GetPlatform(), err)
-					return
-				}
-
-				// 其他检测错误，视为无效
-				var duration int64
-				var isRateLimited bool
-				if result != nil {
-					duration = result.Duration
-					isRateLimited = result.IsRateLimited
-				}
-				mu.Lock()
-				*invalidLinks = append(*invalidLinks, model.InvalidLink{
-					Link:          l,
-					Platform:      ch.GetPlatform(),
-					FailureReason: fmt.Sprintf("检测错误: %v", err),
-					CheckDuration: &duration,
-					IsRateLimited: isRateLimited,
-					SubmissionID:  &submissionID,
-					CreatedAt:     time.Now(),
-				})
-				mu.Unlock()
-				return
-			}
 
 			mu.Lock()
-			if result.Valid {
+			if result.IsPasswordProtected {
+				*lockedLinks = append(*lockedLinks, normalizedLink)
+			} else if result.Valid {
 				*validLinks = append(*validLinks, normalizedLink)
 			} else {
 				invalidLink := model.InvalidLink{
-					Link:          normalizedLink,
-					Platform:      ch.GetPlatform(),
-					FailureReason: result.FailureReason,
-					CheckDuration: &result.Duration,
-					IsRateLimited: result.IsRateLimited,
-					SubmissionID:  &submissionID,
-					CreatedAt:     time.Now(),
+					Link:               normalizedLink,
+					Platform:           ch.GetPlatform(),
+					FailureReason:      result.FailureReason,
+					CheckDuration:      &result.Duration,
+					IsRateLimited:      result.IsRateLimited,
+					IsPasswordProtected: result.IsPasswordProtected,
+					SubmissionID:       &submissionID,
+					CreatedAt:          time.Now(),
 				}
 				*invalidLinks = append(*invalidLinks, invalidLink)
 			}
 			mu.Unlock()
-		}(link)
+		}(link, normalizedLinks[i])
 	}
 
 	log.Printf("checkLinksWithConcurrency: Waiting for all checks to complete for platform %s, submission %d", platform, submissionID)

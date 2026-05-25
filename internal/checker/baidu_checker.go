@@ -129,7 +129,7 @@ func (c *BaiduChecker) Check(link string) (*CheckResult, error) {
 
 	// 如果URL中带有提取码，先验证提取码
 	if password != "" {
-		randsk, err := verifyPassCode(ctx, normalizedLink, shorturl, password)
+		randsk, err := verifyPassCode(ctx, normalizedLink, shorturl, password, c.GetHTTPClient())
 		if err != nil {
 			failureReason := fmt.Sprintf("验证提取码失败: %v", err)
 			return &CheckResult{
@@ -143,7 +143,7 @@ func (c *BaiduChecker) Check(link string) (*CheckResult, error) {
 	}
 
 	// 调用/share/list API（如果有提取码则带上BDCLND，否则不带）
-	result, err := callShareListAPI(ctx, apiURL, normalizedLink, bdclnd)
+	result, err := callShareListAPI(ctx, apiURL, normalizedLink, bdclnd, c.GetHTTPClient())
 	if err != nil {
 		log.Printf("[BaiduChecker] /share/list API请求失败: %v", err)
 		return &CheckResult{
@@ -169,13 +169,15 @@ func (c *BaiduChecker) Check(link string) (*CheckResult, error) {
 
 	// 根据errno判断失败原因
 	failureReason := getFailureReason(errno, errMsg)
-	isRateLimited := errno == -62 // -62表示请求接口受限
+	isRateLimited := errno == -62
+	isPasswordProtected := isPasswordProtected(errno, password != "")
 
 	return &CheckResult{
-		Valid:         false,
-		FailureReason: failureReason,
-		Duration:      time.Since(start).Milliseconds(),
-		IsRateLimited: isRateLimited,
+		Valid:               false,
+		FailureReason:       failureReason,
+		Duration:            time.Since(start).Milliseconds(),
+		IsRateLimited:       isRateLimited,
+		IsPasswordProtected: isPasswordProtected,
 	}, nil
 }
 
@@ -224,11 +226,7 @@ func getShorturl(surl string) string {
 }
 
 // callShareListAPI 调用/share/list API
-func callShareListAPI(ctx context.Context, apiURL, refererURL, bdclnd string) (*ShareListResponse, error) {
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
+func callShareListAPI(ctx context.Context, apiURL, refererURL, bdclnd string, httpClient *http.Client) (*ShareListResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %v", err)
@@ -250,7 +248,7 @@ func callShareListAPI(ctx context.Context, apiURL, refererURL, bdclnd string) (*
 		req.Header.Set("Referer", refererURL)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("请求失败: %v", err)
 	}
@@ -283,17 +281,12 @@ func callShareListAPI(ctx context.Context, apiURL, refererURL, bdclnd string) (*
 }
 
 // verifyPassCode 验证提取码
-func verifyPassCode(ctx context.Context, shareURL, shorturl, password string) (string, error) {
-	// 构建验证URL
+func verifyPassCode(ctx context.Context, shareURL, shorturl, password string, httpClient *http.Client) (string, error) {
 	apiURL := fmt.Sprintf("https://pan.baidu.com/share/verify?surl=%s&pwd=%s", url.QueryEscape(shorturl), url.QueryEscape(password))
 	reqBody := url.Values{
 		"pwd":       {password},
 		"vcode":     {""},
 		"vcode_str": {""},
-	}
-
-	client := &http.Client{
-		Timeout: 30 * time.Second,
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewBufferString(reqBody.Encode()))
@@ -306,7 +299,7 @@ func verifyPassCode(ctx context.Context, shareURL, shorturl, password string) (s
 	req.Header.Set("Referer", shareURL)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("验证请求失败: %v", err)
 	}
@@ -358,4 +351,8 @@ func getFailureReason(errno float64, errMsg string) string {
 	default:
 		return fmt.Sprintf("分享链接无效 (errno: %.0f)", errno)
 	}
+}
+
+func isPasswordProtected(errno float64, hasPwd bool) bool {
+	return int(errno) == -12 && !hasPwd
 }

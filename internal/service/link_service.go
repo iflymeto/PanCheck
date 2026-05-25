@@ -31,12 +31,13 @@ type CheckLinksRequest struct {
 // CheckLinksResponse 检测链接响应
 type CheckLinksResponse struct {
 	SubmissionID       uint     `json:"submission_id"`
-	InvalidLinks       []string `json:"invalid_links"`        // 已知失效链接
-	PendingLinks       []string `json:"pending_links"`        // 待检测链接
-	ValidLinks         []string `json:"valid_links"`          // 有效链接（即时检测后）
-	TotalDuration      *int64   `json:"total_duration"`       // 总耗时（即时检测后）
-	InvalidFormatCount int      `json:"invalid_format_count"` // 不规范链接数量
-	DuplicateCount     int      `json:"duplicate_count"`      // 重复链接数量
+	InvalidLinks       []string `json:"invalid_links"`
+	LockedLinks        []string `json:"locked_links"`
+	PendingLinks       []string `json:"pending_links"`
+	ValidLinks         []string `json:"valid_links"`
+	TotalDuration      *int64   `json:"total_duration"`
+	InvalidFormatCount int      `json:"invalid_format_count"`
+	DuplicateCount     int      `json:"duplicate_count"`
 }
 
 // CheckLinks 检测链接
@@ -79,6 +80,7 @@ func (s *LinkService) CheckLinks(req *CheckLinksRequest, clientIP string, device
 	if len(linkInfos) == 0 {
 		return &CheckLinksResponse{
 			InvalidLinks:       []string{},
+			LockedLinks:        []string{},
 			PendingLinks:       []string{},
 			ValidLinks:         []string{},
 			InvalidFormatCount: invalidFormatCount,
@@ -137,6 +139,7 @@ func (s *LinkService) CheckLinks(req *CheckLinksRequest, clientIP string, device
 	return &CheckLinksResponse{
 		SubmissionID:       record.ID,
 		InvalidLinks:       invalidLinks,
+		LockedLinks:        []string{},
 		PendingLinks:       pendingLinks,
 		ValidLinks:         []string{},
 		InvalidFormatCount: invalidFormatCount,

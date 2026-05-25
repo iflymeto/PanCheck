@@ -4,10 +4,11 @@ import "PanCheck/internal/model"
 
 // CheckResult 检测结果
 type CheckResult struct {
-	Valid         bool   // 是否有效
-	FailureReason string // 失败原因（如果无效）
-	Duration      int64  // 检测耗时（毫秒）
-	IsRateLimited bool   // 是否被平台限制
+	Valid              bool   // 是否有效
+	FailureReason      string // 失败原因（如果无效）
+	Duration           int64  // 检测耗时（毫秒）
+	IsRateLimited      bool   // 是否被平台限制
+	IsPasswordProtected bool   // 链接需要提取码但链接本身有效
 }
 
 // LinkChecker 链接检测器接口

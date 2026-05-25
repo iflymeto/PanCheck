@@ -3,6 +3,8 @@ package repository
 import (
 	"PanCheck/internal/model"
 	"PanCheck/pkg/database"
+
+	"gorm.io/gorm/clause"
 )
 
 // InvalidLinkRepository 失效链接仓库
@@ -42,6 +44,19 @@ func (r *InvalidLinkRepository) CreateOrUpdate(invalidLink *model.InvalidLink) e
 	return database.DB.Save(&existing).Error
 }
 
+// BatchUpsert 批量插入或更新失效链接（使用数据库层 UPSERT，替代逐条 SELECT+INSERT/UPDATE）
+func (r *InvalidLinkRepository) BatchUpsert(invalidLinks []model.InvalidLink) error {
+	if len(invalidLinks) == 0 {
+		return nil
+	}
+	return database.DB.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "link"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"failure_reason", "check_duration", "is_rate_limited", "submission_id",
+		}),
+	}).CreateInBatches(invalidLinks, 100).Error
+}
+
 // List 分页查询失效链接
 func (r *InvalidLinkRepository) List(page, pageSize int, platform *model.Platform) ([]model.InvalidLink, int64, error) {
 	var invalidLinks []model.InvalidLink
@@ -76,11 +91,50 @@ func (r *InvalidLinkRepository) Count(count *int64) error {
 	return database.DB.Model(&model.InvalidLink{}).Where("is_rate_limited = ?", false).Count(count).Error
 }
 
+// FindByLinksNonRateLimited 批量查找非被限制的失效链接（排除 is_rate_limited=true 的记录）
+func (r *InvalidLinkRepository) FindByLinksNonRateLimited(links []string) (map[string]*model.InvalidLink, error) {
+	if len(links) == 0 {
+		return make(map[string]*model.InvalidLink), nil
+	}
+	var invalidLinks []model.InvalidLink
+	err := database.DB.Where("link IN ? AND is_rate_limited = ?", links, false).Find(&invalidLinks).Error
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]*model.InvalidLink, len(invalidLinks))
+	for i := range invalidLinks {
+		result[invalidLinks[i].Link] = &invalidLinks[i]
+	}
+	return result, nil
+}
+
 // CountByPlatform 按平台统计失效链接数
 func (r *InvalidLinkRepository) CountByPlatform(platform model.Platform, count *int64) error {
 	return database.DB.Model(&model.InvalidLink{}).
 		Where("platform = ?", platform).
 		Count(count).Error
+}
+
+// GroupCountByPlatform 按平台分组统计失效链接数（单次SQL查询）
+func (r *InvalidLinkRepository) GroupCountByPlatform() (map[string]int64, error) {
+	type result struct {
+		Platform string
+		Count    int64
+	}
+	var results []result
+	err := database.DB.Model(&model.InvalidLink{}).
+		Select("platform, COUNT(*) as count").
+		Group("platform").
+		Scan(&results).Error
+	if err != nil {
+		return nil, err
+	}
+
+	countMap := make(map[string]int64, len(results))
+	for _, r := range results {
+		countMap[r.Platform] = r.Count
+	}
+	return countMap, nil
 }
 
 // CountByRateLimited 统计被限制的失效链接数

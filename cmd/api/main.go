@@ -327,14 +327,34 @@ func loadPlatformTTLMap(settingsRepo *repository.SettingsRepository) map[model.P
 	return ttlMap
 }
 
-// startBackgroundChecker 启动后台检测服务
+// startBackgroundChecker 启动后台检测服务（自适应间隔）
 func startBackgroundChecker(checkerService *service.CheckerService) {
-	ticker := time.NewTicker(30 * time.Second) // 每30秒检测一次
-	defer ticker.Stop()
+	const (
+		minInterval = 10 * time.Second
+		maxInterval = 120 * time.Second
+		step        = 10 * time.Second
+	)
 
-	for range ticker.C {
+	interval := minInterval
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+
+	for range timer.C {
+		hadWork := false
 		if err := checkerService.CheckPendingSubmissions(10); err != nil {
 			log.Printf("Background checker error: %v\n", err)
+		} else {
+			hadWork = true
 		}
+
+		if hadWork {
+			interval = minInterval
+		} else {
+			interval += step
+			if interval > maxInterval {
+				interval = maxInterval
+			}
+		}
+		timer.Reset(interval)
 	}
 }

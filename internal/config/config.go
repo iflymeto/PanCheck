@@ -191,7 +191,7 @@ func setDefaults() {
 	viper.SetDefault("CHECKER_TIMEOUT", 30)
 
 	// Redis默认配置
-	viper.SetDefault("REDIS_ENABLED", false)
+	viper.SetDefault("REDIS_ENABLED", "false")
 	viper.SetDefault("REDIS_HOST", "localhost")
 	viper.SetDefault("REDIS_PORT", 6379)
 	viper.SetDefault("REDIS_USERNAME", "")

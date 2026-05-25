@@ -5,6 +5,7 @@ import (
 	apphttp "PanCheck/pkg/http"
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"log"
@@ -64,10 +65,15 @@ func (c *TianyiChecker) Check(link string) (*CheckResult, error) {
 		}, nil
 	}
 
-	// 判断链接是否有效：通过 shareId 来判断
-	// 如果 shareId > 0，说明能获取到分享信息，链接有效
-	// 注意：即使需要访问码，只要API能返回shareId，说明链接本身是有效的
 	if response.ShareId > 0 {
+		if response.NeedAccessCode == 1 && accessCode == "" {
+			return &CheckResult{
+				Valid:               true,
+				FailureReason:       "",
+				Duration:            duration,
+				IsPasswordProtected: true,
+			}, nil
+		}
 		return &CheckResult{
 			Valid:         true,
 			FailureReason: "",
@@ -76,7 +82,11 @@ func (c *TianyiChecker) Check(link string) (*CheckResult, error) {
 	}
 
 	// shareId <= 0 或不存在，表示链接无效
-	failureReason := response.ResMessage
+	// 优先使用具体错误码生成失败原因
+	failureReason := mapTelecomErrorMessage(response.ErrorCode, response.ResMessage)
+	if failureReason == "" {
+		failureReason = response.ResMessage
+	}
 	if failureReason == "" {
 		failureReason = fmt.Sprintf("无法获取分享信息 (ShareId=%d)", response.ShareId)
 	}
@@ -91,9 +101,16 @@ func (c *TianyiChecker) Check(link string) (*CheckResult, error) {
 type TelecomResp struct {
 	ResCode        int    `json:"res_code"`
 	ResMessage     string `json:"res_message"`
+	ErrorCode      string `json:"error_code"`
 	FileName       string `json:"fileName"`
 	NeedAccessCode int    `json:"needAccessCode"` // 是否需要访问码：1表示需要，0表示不需要
 	ShareId        int64  `json:"shareId"`        // 分享ID，如果大于0表示链接有效
+}
+
+type telecomErrorResp struct {
+	XMLName xml.Name `xml:"error"`
+	Code    string   `xml:"code"`
+	Message string   `xml:"message"`
 }
 
 // telecomRequest 发起请求
@@ -157,13 +174,65 @@ func telecomRequest(ctx context.Context, codeValue string, accessCode string, re
 		return nil, fmt.Errorf("API返回错误状态码: %d, 响应: %s", resp.StatusCode, string(body))
 	}
 
+	trimmedBody := strings.TrimSpace(string(body))
+	if strings.HasPrefix(trimmedBody, "<") {
+		var errorResp telecomErrorResp
+		if err = xml.Unmarshal(body, &errorResp); err == nil && errorResp.Code != "" {
+			return &TelecomResp{
+				ResMessage: mapTelecomErrorMessage(errorResp.Code, errorResp.Message),
+				ErrorCode:  errorResp.Code,
+			}, nil
+		}
+	}
+
 	var response TelecomResp
 	if err = json.Unmarshal(body, &response); err != nil {
 		log.Printf("[TianyiChecker] JSON解析失败，原始响应: %s", string(body))
 		return nil, fmt.Errorf("解析JSON失败: %v", err)
 	}
 
+	// 如果 error_code 字段为空，尝试从响应体文本中扫描已知错误码
+	bodyStr := string(body)
+	if response.ErrorCode == "" {
+		knownErrorCodes := []string{
+			"ShareInfoNotFound",
+			"ShareNotFound",
+			"FileNotFound",
+			"ShareExpiredError",
+			"ShareAuditNotPass",
+			"FolderNotFound",
+		}
+		for _, code := range knownErrorCodes {
+			if strings.Contains(bodyStr, code) {
+				response.ErrorCode = code
+				break
+			}
+		}
+	}
+
 	return &response, nil
+}
+
+func mapTelecomErrorMessage(code string, fallback string) string {
+	switch code {
+	case "ShareInfoNotFound":
+		return "分享信息不存在"
+	case "ShareNotFound":
+		return "分享链接不存在"
+	case "FileNotFound":
+		return "分享文件不存在"
+	case "ShareExpiredError":
+		return "分享链接已过期"
+	case "ShareAuditNotPass":
+		return "分享因审核未通过已失效"
+	case "FolderNotFound":
+		return "分享文件夹不存在"
+	default:
+		if fallback != "" {
+			return fallback
+		}
+		return code
+	}
 }
 
 // extractCodeFromURL 从URL中提取code参数和访问码
@@ -182,39 +251,34 @@ func extractCodeFromURL(urlStr string) (string, string, string, error) {
 	var codeValue string
 	var accessCode string
 
-	// 首先尝试从查询参数中获取code
 	queryParams := parsedURL.Query()
 	codeValue = queryParams.Get("code")
 
-	// 如果查询参数中没有code，尝试从路径中提取（/t/xxx格式）
 	if codeValue == "" {
 		path := parsedURL.Path
-		// 匹配 /t/xxx 格式
 		if strings.HasPrefix(path, "/t/") {
 			codeValue = strings.TrimPrefix(path, "/t/")
-			// 移除路径中的其他部分（如果有）
 			if idx := strings.Index(codeValue, "/"); idx != -1 {
 				codeValue = codeValue[:idx]
 			}
+			codeValue = trimCodeValue(codeValue)
 		}
 	}
 
-	// 如果路径中也没有code，尝试从Fragment（hash）中提取（#/t/xxx格式）
 	if codeValue == "" && parsedURL.Fragment != "" {
 		fragment := parsedURL.Fragment
-		// 匹配 #/t/xxx 或 /t/xxx 格式（hash中可能包含或不包含#）
 		if strings.HasPrefix(fragment, "/t/") {
 			codeValue = strings.TrimPrefix(fragment, "/t/")
-			// 移除hash中的其他部分（如果有）
 			if idx := strings.Index(codeValue, "/"); idx != -1 {
 				codeValue = codeValue[:idx]
 			}
+			codeValue = trimCodeValue(codeValue)
 		} else if strings.HasPrefix(fragment, "#/t/") {
 			codeValue = strings.TrimPrefix(fragment, "#/t/")
-			// 移除hash中的其他部分（如果有）
 			if idx := strings.Index(codeValue, "/"); idx != -1 {
 				codeValue = codeValue[:idx]
 			}
+			codeValue = trimCodeValue(codeValue)
 		}
 	}
 
@@ -233,9 +297,19 @@ func extractCodeFromURL(urlStr string) (string, string, string, error) {
 	// 从URL文本中提取访问码（访问码：xxx）
 	// 支持格式：https://cloud.189.cn/t/xxx（访问码：xxx）
 	accessCodePattern := regexp.MustCompile(`（访问码[：:]\s*([a-zA-Z0-9]+)）`)
-	matches := accessCodePattern.FindStringSubmatch(urlStr)
+	decodedURL, decodeErr := url.QueryUnescape(urlStr)
+	if decodeErr != nil {
+		decodedURL = urlStr
+	}
+	matches := accessCodePattern.FindStringSubmatch(decodedURL)
 	if len(matches) >= 2 && matches[1] != "" {
 		accessCode = matches[1]
+	}
+	if accessCode == "" {
+		matches = accessCodePattern.FindStringSubmatch(urlStr)
+		if len(matches) >= 2 && matches[1] != "" {
+			accessCode = matches[1]
+		}
 	}
 
 	parsedInputURL, err := url.Parse(urlStr)
@@ -275,4 +349,15 @@ func containsSpecialChars(s string) bool {
 		}
 	}
 	return false
+}
+
+func trimCodeValue(code string) string {
+	end := len(code)
+	for i, r := range code {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
+			end = i
+			break
+		}
+	}
+	return code[:end]
 }

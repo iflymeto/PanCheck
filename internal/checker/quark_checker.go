@@ -37,7 +37,7 @@ func (c *QuarkChecker) Check(link string) (*CheckResult, error) {
 	defer cancel()
 
 	// 提取资源ID和密码
-	resourceID, passCode, err := extractParamsQuark(link)
+	resourceID, passCode, err := extractParamsQuark(link, c.GetHTTPClient())
 	if err != nil {
 		return &CheckResult{
 			Valid:         false,
@@ -67,6 +67,22 @@ func (c *QuarkChecker) Check(link string) (*CheckResult, error) {
 
 	// 检查API响应状态
 	if response.Status != 200 || response.Code != 0 {
+		if response.Code == 41008 {
+			isLocked := passCode == ""
+			return &CheckResult{
+				Valid:               isLocked,
+				FailureReason:       "链接需要提取码",
+				Duration:            duration,
+				IsPasswordProtected: isLocked,
+			}, nil
+		}
+		if response.Code == 41004 || response.Code == 41010 || response.Code == 41011 {
+			return &CheckResult{
+				Valid:         false,
+				FailureReason: "提取码错误",
+				Duration:      duration,
+			}, nil
+		}
 		return &CheckResult{
 			Valid:         false,
 			FailureReason: "分享链接失效或不存在",
@@ -102,9 +118,70 @@ func (c *QuarkChecker) Check(link string) (*CheckResult, error) {
 
 	// 检查文件列表是否为空
 	if len(detailResponse.Data.List) == 0 {
+		// 文件列表为空时不一定是链接失效，需要结合share.status判断
+		share := detailResponse.Data.Share
+		if share.Status > 1 {
+			// status > 1 表示分享已失效/违规
+			if share.PartialViolation {
+				return &CheckResult{
+					Valid:         false,
+					FailureReason: "分享链接部分违规已失效(share_status=" + fmt.Sprintf("%d", share.Status) + ")",
+					Duration:      time.Since(start).Milliseconds(),
+				}, nil
+			}
+			return &CheckResult{
+				Valid:         false,
+				FailureReason: "分享链接已失效(share_status=" + fmt.Sprintf("%d", share.Status) + ")",
+				Duration:      time.Since(start).Milliseconds(),
+			}, nil
+		}
 		return &CheckResult{
 			Valid:         false,
 			FailureReason: "分享链接无效：文件列表为空",
+			Duration:      time.Since(start).Milliseconds(),
+		}, nil
+	}
+
+	// 文件列表非空时，进一步检查share状态
+	share := detailResponse.Data.Share
+	if share.Status == 1 {
+		if share.PartialViolation {
+			// status=1 且 partial_violation=true: 链接有效但部分文件违规
+			return &CheckResult{
+				Valid:         true,
+				FailureReason: "链接有效但部分文件违规",
+				Duration:      time.Since(start).Milliseconds(),
+			}, nil
+		}
+		return &CheckResult{
+			Valid:         true,
+			FailureReason: "",
+			Duration:      time.Since(start).Milliseconds(),
+		}, nil
+	}
+
+	if share.Status == 3 {
+		// status=3: 需要结合partial_violation判断
+		if share.PartialViolation {
+			return &CheckResult{
+				Valid:         false,
+				FailureReason: "分享链接因违规已失效(share_status=3, partial_violation=true)",
+				Duration:      time.Since(start).Milliseconds(),
+			}, nil
+		}
+		// status=3 且无违规，链接仍有效
+		return &CheckResult{
+			Valid:         true,
+			FailureReason: "",
+			Duration:      time.Since(start).Milliseconds(),
+		}, nil
+	}
+
+	// share.status > 1 且非3，一律失效
+	if share.Status > 1 {
+		return &CheckResult{
+			Valid:         false,
+			FailureReason: "分享链接已失效(share_status=" + fmt.Sprintf("%d", share.Status) + ")",
 			Duration:      time.Since(start).Milliseconds(),
 		}, nil
 	}
@@ -138,10 +215,20 @@ type quarkDetailResp struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Data    struct {
-		IsOwner int           `json:"is_owner"`
-		List    []interface{} `json:"list"`
+		IsOwner         int           `json:"is_owner"`
+		List            []interface{} `json:"list"`
+		Share           quarkShare    `json:"share"`
+		IsExpire        bool          `json:"is_expire"`
 	} `json:"data"`
 	Metadata map[string]interface{} `json:"metadata"`
+}
+
+// quarkShare 夸克分享详情中的share字段
+type quarkShare struct {
+	Status           int  `json:"status"`
+	PartialViolation bool `json:"partial_violation"`
+	ExpiredAt        int64 `json:"expired_at"`
+	ExpiredType      int  `json:"expired_type"`
 }
 
 // quarkRequest 获取夸克网盘分享信息
@@ -254,7 +341,7 @@ func quarkDetailRequest(ctx context.Context, resourceID string, stoken string) (
 // - https://pan.quark.cn/s/{pwd_id}#/list/share
 // - https://pan.quark.cn/s/{pwd_id}?pwd={password}#/list/share
 // - https://pan.qoark.cn/s/{short_code} (需要重定向到pan.quark.cn获取真实pwd_id)
-func extractParamsQuark(rawURL string) (resId, pwd string, err error) {
+func extractParamsQuark(rawURL string, httpClient *http.Client) (resId, pwd string, err error) {
 	// 支持查询参数和锚点的正则表达式
 	// 匹配格式: https://pan.quark.cn/s/{pwd_id}[?pwd={password}][#{fragment}]
 	// 或: https://pan.qoark.cn/s/{short_code}[?pwd={password}][#{fragment}]
@@ -296,7 +383,7 @@ func extractParamsQuark(rawURL string) (resId, pwd string, err error) {
 		defer cancel()
 
 		// 发起请求，跟随重定向
-		redirectURL, err := followRedirect(ctx, rawURL)
+		redirectURL, err := followRedirect(ctx, rawURL, httpClient)
 		if err != nil {
 			return "", "", fmt.Errorf("重定向失败: %v", err)
 		}
@@ -356,20 +443,7 @@ func extractParamsQuark(rawURL string) (resId, pwd string, err error) {
 }
 
 // followRedirect 跟随HTTP重定向，返回最终的URL
-func followRedirect(ctx context.Context, urlStr string) (string, error) {
-	// 创建一个会跟随重定向的HTTP客户端
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-		// 默认会跟随最多10次重定向
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			// 如果重定向次数过多，返回错误
-			if len(via) >= 10 {
-				return fmt.Errorf("重定向次数过多")
-			}
-			return nil
-		},
-	}
-
+func followRedirect(ctx context.Context, urlStr string, httpClient *http.Client) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
 	if err != nil {
 		return "", fmt.Errorf("创建请求失败: %v", err)
@@ -378,7 +452,7 @@ func followRedirect(ctx context.Context, urlStr string) (string, error) {
 	apphttp.SetDefaultHeaders(req)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", &apphttp.TimeoutError{Message: "重定向请求超时"}

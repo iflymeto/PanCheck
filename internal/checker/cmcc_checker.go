@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -26,7 +27,7 @@ func NewCMCCChecker(concurrencyLimit int, timeout time.Duration) *CMCCChecker {
 	// 2. https://caiyun.139.com/m/i?([^&]+)
 	return &CMCCChecker{
 		BaseChecker:  NewBaseChecker(model.PlatformCMCC, concurrencyLimit, timeout),
-		sharePattern: regexp.MustCompile(`https://(?:yun\.139\.com/shareweb/#/w/i/|caiyun\.139\.com/m/i\?)([^&]+)`),
+		sharePattern: regexp.MustCompile(`https://(?:yun\.139\.com/shareweb/#/w/i/|caiyun\.139\.com/m/i\?|caiyun\.139\.com/w/i/|caiyun\.feixin\.10086\.cn/[^/]*/i/)([^&/?#]+)`),
 	}
 }
 
@@ -84,24 +85,14 @@ func (c *CMCCChecker) Check(link string) (*CheckResult, error) {
 	data := response["data"]
 	fmt.Printf("[CMCCChecker] 响应结果 (shareID=%s): resultCode=%s, desc=%s, data=%v\n", shareID, resultCode, desc, data != nil)
 
-	// 判断链接是否有效：
-	// 1. resultCode 必须为 "0"（成功）
-	// 2. data 不能为 null（必须包含分享信息）
-	if resultCode == "0" && data != nil {
+	valid, failureMessage := evaluateCMCCResponse(response)
+	if valid {
 		fmt.Printf("[CMCCChecker] 链接有效 (shareID=%s)\n", shareID)
 		return &CheckResult{
 			Valid:         true,
 			FailureReason: "",
 			Duration:      duration,
 		}, nil
-	}
-
-	// 获取失败原因
-	failureMessage := "获取分享信息失败"
-	if desc != "" {
-		failureMessage = desc
-	} else if resultCode != "" {
-		failureMessage = fmt.Sprintf("错误码: %s", resultCode)
 	}
 
 	fmt.Printf("[CMCCChecker] 链接无效 (shareID=%s): %s\n", shareID, failureMessage)
@@ -204,4 +195,62 @@ func (c *CMCCChecker) getShareInfo(ctx context.Context, shareID string) (map[str
 	fmt.Printf("[CMCCChecker] 解析后的响应结构 (shareID=%s): %+v\n", shareID, response)
 
 	return response, nil
+}
+
+func evaluateCMCCResponse(response map[string]interface{}) (bool, string) {
+	resultCode, _ := response["resultCode"].(string)
+	desc, _ := response["desc"].(string)
+
+	data, _ := response["data"].(map[string]interface{})
+	if resultCode == "0" && data != nil {
+		if hasCMCCShareContent(data) {
+			return true, ""
+		}
+		return false, "分享链接有效，但内容为空"
+	}
+
+	failureMessage := "获取分享信息失败"
+	if desc != "" {
+		failureMessage = desc
+	} else if resultCode != "" {
+		failureMessage = fmt.Sprintf("错误码: %s", resultCode)
+	}
+	return false, failureMessage
+}
+
+func hasCMCCShareContent(data map[string]interface{}) bool {
+	if cmccListHasEntries(data["caLst"]) || cmccListHasEntries(data["coLst"]) {
+		return true
+	}
+
+	if cmccCountPositive(data["caLength"]) || cmccCountPositive(data["coLength"]) {
+		return true
+	}
+
+	return false
+}
+
+func cmccListHasEntries(value interface{}) bool {
+	items, ok := value.([]interface{})
+	return ok && len(items) > 0
+}
+
+func cmccCountPositive(value interface{}) bool {
+	switch v := value.(type) {
+	case float64:
+		return v > 0
+	case float32:
+		return v > 0
+	case int:
+		return v > 0
+	case int32:
+		return v > 0
+	case int64:
+		return v > 0
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		return err == nil && n > 0
+	default:
+		return false
+	}
 }

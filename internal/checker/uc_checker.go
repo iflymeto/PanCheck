@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -43,9 +44,19 @@ func (c *UCChecker) Check(link string) (*CheckResult, error) {
 		}, nil
 	}
 
-	// 访问分享页面
-	url := fmt.Sprintf("https://drive.uc.cn/s/%s", shareID)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	parsedURL, _ := url.Parse(link)
+	host := ""
+	if parsedURL != nil {
+		host = parsedURL.Host
+	}
+
+	var checkURL string
+	if strings.Contains(host, "yun.uc.cn") || strings.Contains(host, "uc.cn") {
+		checkURL = fmt.Sprintf("https://drive.uc.cn/s/%s", shareID)
+	} else {
+		checkURL = fmt.Sprintf("https://drive.uc.cn/s/%s", shareID)
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", checkURL, nil)
 	if err != nil {
 		return &CheckResult{
 			Valid:         false,
@@ -101,8 +112,8 @@ func (c *UCChecker) Check(link string) (*CheckResult, error) {
 
 	pageText := strings.ToLower(string(body))
 	errorKeywords := []string{"失效", "不存在", "违规", "删除", "已过期", "被取消"}
+	passwordKeywords := []string{"提取码", "访问码", "请输入密码"}
 
-	// 检查是否包含错误关键词
 	for _, keyword := range errorKeywords {
 		if strings.Contains(pageText, keyword) {
 			return &CheckResult{
@@ -113,7 +124,6 @@ func (c *UCChecker) Check(link string) (*CheckResult, error) {
 		}
 	}
 
-	// 检查是否包含有效关键词
 	validKeywords := []string{"文件", "分享"}
 	for _, keyword := range validKeywords {
 		if strings.Contains(pageText, keyword) {
@@ -121,6 +131,17 @@ func (c *UCChecker) Check(link string) (*CheckResult, error) {
 				Valid:         true,
 				FailureReason: "",
 				Duration:      time.Since(start).Milliseconds(),
+			}, nil
+		}
+	}
+
+	for _, keyword := range passwordKeywords {
+		if strings.Contains(pageText, keyword) {
+			return &CheckResult{
+				Valid:               true,
+				FailureReason:       "链接需要提取码",
+				Duration:            time.Since(start).Milliseconds(),
+				IsPasswordProtected: true,
 			}, nil
 		}
 	}
@@ -134,18 +155,25 @@ func (c *UCChecker) Check(link string) (*CheckResult, error) {
 
 // extractShareIDFromURL 从URL中提取share_id
 func extractShareIDFromURL(urlStr, platform string) (string, error) {
-	var pattern string
+	var patterns []string
 	switch platform {
 	case "uc":
-		pattern = `https?://drive\.uc\.cn/s/([a-zA-Z0-9]+)`
+		patterns = []string{
+			`https?://drive\.uc\.cn/s/([a-zA-Z0-9]+)`,
+			`https?://yun\.uc\.cn/s/([a-zA-Z0-9]+)`,
+			`https?://uc\.cn/s/([a-zA-Z0-9]+)`,
+		}
 	default:
 		return "", fmt.Errorf("不支持的平台: %s", platform)
 	}
 
-	re := regexp.MustCompile(pattern)
-	matches := re.FindStringSubmatch(urlStr)
-	if len(matches) < 2 {
-		return "", fmt.Errorf("无法从URL中提取share_id")
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(pattern)
+		matches := re.FindStringSubmatch(urlStr)
+		if len(matches) >= 2 {
+			return matches[1], nil
+		}
 	}
-	return matches[1], nil
+
+	return "", fmt.Errorf("无法从URL中提取share_id")
 }
