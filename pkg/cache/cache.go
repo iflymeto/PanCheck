@@ -26,6 +26,8 @@ type CacheRepository interface {
 	Close() error
 	// IsEnabled 检查缓存是否启用
 	IsEnabled() bool
+	// GetClient 获取底层 Redis 客户端（用于系统监控）
+	GetClient() *redis.Client
 }
 
 // MGet 批量从缓存获取检测结果
@@ -210,4 +212,9 @@ func (r *redisCacheRepository) Close() error {
 		return r.client.Close()
 	}
 	return nil
+}
+
+// GetClient 获取底层 Redis 客户端
+func (r *redisCacheRepository) GetClient() *redis.Client {
+	return r.client
 }

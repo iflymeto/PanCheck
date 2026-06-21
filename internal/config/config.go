@@ -158,7 +158,7 @@ func Load(configPath string) error {
 		AppConfig.Checker.Timeout = 30
 	}
 	if AppConfig.Redis.Host == "" {
-		AppConfig.Redis.Host = "localhost"
+		AppConfig.Redis.Host = "redis"
 	}
 	if AppConfig.Redis.Port == 0 {
 		AppConfig.Redis.Port = 6379

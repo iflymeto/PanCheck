@@ -1,7 +1,5 @@
 import { Link, Outlet, useLocation } from 'react-router-dom';
-import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
-import { Settings, LayoutDashboard, LogOut, Clock } from 'lucide-react';
 
 export function AdminDashboard() {
   const { logout } = useAuth();
@@ -12,62 +10,91 @@ export function AdminDashboard() {
     window.location.href = '/admin/login';
   };
 
+  const navItems = [
+    { path: '/admin/dashboard', label: '仪表盘' },
+    { path: '/admin/scheduled-tasks', label: '定时任务' },
+    { path: '/admin/settings', label: '配置' },
+  ];
+
   return (
-    <div className="flex-1 bg-background flex flex-col">
-      <nav className="border-b">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-6">
-            <Link
-              to="/"
-              className="flex items-center gap-2 hover:opacity-80 transition-opacity cursor-pointer"
-            >
-              <img
-                src="/images/logo.png"
-                alt="PanCheck Logo"
-                className="h-8 w-8"
-              />
-              <span className="text-lg font-semibold">PanCheck</span>
-            </Link>
-            <div className="flex gap-2">
-              <Button
-                variant={location.pathname === '/admin/dashboard' ? 'default' : 'ghost'}
-                asChild
-              >
-                <Link to="/admin/dashboard">
-                  <LayoutDashboard className="mr-2 h-4 w-4" />
-                  仪表盘
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: '#f6f7fb' }}>
+      {/* Glass Topbar */}
+      <header style={{
+        height: 64,
+        background: 'rgba(255,255,255,0.88)',
+        backdropFilter: 'blur(12px)',
+        borderBottom: '1px solid #e5e7eb',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        padding: '0 32px',
+        position: 'sticky',
+        top: 0,
+        zIndex: 10,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+          <Link to="/" style={{ display: 'flex', alignItems: 'center', gap: 10, textDecoration: 'none', color: '#111827' }}>
+            <div style={{
+              width: 34, height: 34, borderRadius: '50%', background: '#111827', color: 'white',
+              display: 'grid', placeItems: 'center', fontSize: 15, fontWeight: 700,
+            }}>P</div>
+            <span style={{ fontWeight: 700, fontSize: 18 }}>PanCheck</span>
+          </Link>
+          <nav style={{ display: 'flex', gap: 8, marginLeft: 32 }}>
+            {navItems.map(item => {
+              const isActive = location.pathname === item.path;
+              return (
+                <Link
+                  key={item.path}
+                  to={item.path}
+                  style={{
+                    textDecoration: 'none',
+                    color: isActive ? 'white' : '#6b7280',
+                    padding: '8px 14px',
+                    borderRadius: 10,
+                    fontSize: 14,
+                    background: isActive ? '#111827' : 'transparent',
+                    transition: 'all 0.15s',
+                  }}
+                  onMouseEnter={e => {
+                    if (!isActive) {
+                      (e.target as HTMLElement).style.background = '#f3f4f6';
+                      (e.target as HTMLElement).style.color = '#111827';
+                    }
+                  }}
+                  onMouseLeave={e => {
+                    if (!isActive) {
+                      (e.target as HTMLElement).style.background = 'transparent';
+                      (e.target as HTMLElement).style.color = '#6b7280';
+                    }
+                  }}
+                >
+                  {item.label}
                 </Link>
-              </Button>
-            <Button
-              variant={location.pathname === '/admin/scheduled-tasks' ? 'default' : 'ghost'}
-              asChild
-            >
-              <Link to="/admin/scheduled-tasks">
-                <Clock className="mr-2 h-4 w-4" />
-                定时任务
-              </Link>
-            </Button>
-            <Button
-              variant={location.pathname === '/admin/settings' ? 'default' : 'ghost'}
-              asChild
-            >
-              <Link to="/admin/settings">
-                <Settings className="mr-2 h-4 w-4" />
-                配置
-              </Link>
-            </Button>
-            </div>
-          </div>
-          <Button variant="ghost" onClick={handleLogout}>
-            <LogOut className="mr-2 h-4 w-4" />
-            退出登录
-          </Button>
+              );
+            })}
+          </nav>
         </div>
-      </nav>
-      <div className="container mx-auto py-8">
+        <button
+          onClick={handleLogout}
+          style={{
+            border: '1px solid #e5e7eb',
+            background: 'white',
+            color: '#111827',
+            borderRadius: 10,
+            padding: '8px 14px',
+            cursor: 'pointer',
+            fontSize: 14,
+          }}
+          onMouseEnter={e => (e.target as HTMLElement).style.background = '#f9fafb'}
+          onMouseLeave={e => (e.target as HTMLElement).style.background = 'white'}
+        >
+          退出登录
+        </button>
+      </header>
+      <div style={{ flex: 1, maxWidth: 1280, margin: '0 auto', padding: '28px 32px 40px', width: '100%' }}>
         <Outlet />
       </div>
     </div>
   );
 }
-

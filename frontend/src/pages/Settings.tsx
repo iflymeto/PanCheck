@@ -5,8 +5,10 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { settingsApi, PlatformRateConfig, RedisConfig } from '@/api/settingsApi';
+import { systemApi } from '@/api/systemApi';
 import { toast } from 'sonner';
 import { PLATFORM_NAMES } from '@/utils/constants';
+import { Loader2, CheckCircle2, XCircle } from 'lucide-react';
 
 export function Settings() {
   const [rateConfigSettings, setRateConfigSettings] = useState<Record<string, PlatformRateConfig>>({});
@@ -21,6 +23,8 @@ export function Settings() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savingRedis, setSavingRedis] = useState(false);
+  const [testingRedis, setTestingRedis] = useState(false);
+  const [redisTestResult, setRedisTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
   useEffect(() => {
     loadSettings();
@@ -93,6 +97,36 @@ export function Settings() {
       toast.error('保存失败: ' + (error.response?.data?.error || error.message));
     } finally {
       setSavingRedis(false);
+    }
+  };
+
+  const handleTestRedisConnection = async () => {
+    setTestingRedis(true);
+    setRedisTestResult(null);
+    try {
+      const result = await systemApi.testRedisConnection({
+        host: redisConfig.host,
+        port: redisConfig.port,
+        username: redisConfig.username,
+        password: redisConfig.password,
+      });
+      setRedisTestResult({
+        success: result.success,
+        message: result.success ? `连接成功 (Redis ${result.version})` : `连接失败: ${result.error}`,
+      });
+      if (result.success) {
+        toast.success('Redis 连接测试成功');
+      } else {
+        toast.error('Redis 连接失败: ' + result.error);
+      }
+    } catch (error: any) {
+      setRedisTestResult({
+        success: false,
+        message: '测试请求失败: ' + (error.response?.data?.error || error.message),
+      });
+      toast.error('测试请求失败');
+    } finally {
+      setTestingRedis(false);
     }
   };
 
@@ -205,7 +239,22 @@ export function Settings() {
                 </>
               )}
 
-              <div className="flex justify-end">
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="outline"
+                  onClick={handleTestRedisConnection}
+                  disabled={testingRedis || !redisConfig.enabled}
+                  className="w-36"
+                >
+                  {testingRedis ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      测试中...
+                    </>
+                  ) : (
+                    '测试连接'
+                  )}
+                </Button>
                 <Button
                   onClick={handleSaveRedisConfig}
                   disabled={savingRedis || !redisConfig.enabled}
@@ -214,6 +263,21 @@ export function Settings() {
                   {savingRedis ? '保存中...' : '保存配置'}
                 </Button>
               </div>
+
+              {redisTestResult && (
+                <div className={`flex items-center gap-2 p-3 rounded-md text-sm ${
+                  redisTestResult.success 
+                    ? 'bg-green-50 text-green-700 border border-green-200' 
+                    : 'bg-red-50 text-red-700 border border-red-200'
+                }`}>
+                  {redisTestResult.success ? (
+                    <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
+                  ) : (
+                    <XCircle className="h-4 w-4 flex-shrink-0" />
+                  )}
+                  {redisTestResult.message}
+                </div>
+              )}
             </div>
           )}
         </CardContent>

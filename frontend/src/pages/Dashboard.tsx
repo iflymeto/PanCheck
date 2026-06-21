@@ -1,36 +1,22 @@
-import { useState, useEffect } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { useState, useEffect, useRef } from 'react';
 import { statisticsApi, type StatisticsOverview, type PlatformInvalidCount, type TimeSeriesData } from '@/api/statisticsApi';
+import { systemApi, type SystemInfo, type RedisStats, type DBStats } from '@/api/systemApi';
 import { PLATFORM_NAMES } from '@/utils/constants';
 import { TimeRangeSelector, type TimeRange } from '@/components/TimeRangeSelector';
 import { toast } from 'sonner';
-import { BarChart, Bar, Rectangle, Cell, LineChart, Line, XAxis, YAxis, CartesianGrid } from 'recharts';
-import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from '@/components/ui/chart';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { linkApi } from '@/api/linkApi';
 
-// 柱状图配置
-const createChartConfig = (platforms: string[]): ChartConfig => {
-  const colors = ['hsl(var(--chart-1))', 'hsl(var(--chart-2))', 'hsl(var(--chart-3))', 'hsl(var(--chart-4))', 'hsl(var(--chart-5))', 'hsl(var(--chart-6))', 'hsl(var(--chart-7))', 'hsl(var(--chart-8))', 'hsl(var(--chart-9))'];
-  
-  const config: ChartConfig = {
-    count: {
-      label: '失效链接数',
-    },
-  };
-
-  platforms.forEach((platform, index) => {
-    config[platform] = {
-      label: PLATFORM_NAMES[platform] || platform,
-      color: colors[index % colors.length],
-    };
-  });
-
-  return config;
-};
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
 
 interface RateLimitedLink {
   id: number;
@@ -43,6 +29,8 @@ interface RateLimitedLink {
   created_at: string;
 }
 
+const BAR_COLORS = ['#ef6b4a', '#14b8a6', '#264653', '#f59e0b', '#22c55e', '#8b5cf6', '#2563eb', '#ec4899', '#06b6d4'];
+
 export function Dashboard() {
   const [overview, setOverview] = useState<StatisticsOverview | null>(null);
   const [platformCounts, setPlatformCounts] = useState<PlatformInvalidCount[]>([]);
@@ -50,8 +38,13 @@ export function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [timeSeriesLoading, setTimeSeriesLoading] = useState(false);
   const [timeRange, setTimeRange] = useState<TimeRange>('last7d');
-  
-  // 受限链接弹窗相关状态
+  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
+  const [redisStats, setRedisStats] = useState<RedisStats | null>(null);
+  const [dbStats, setDbStats] = useState<DBStats | null>(null);
+  const [hoveredBar, setHoveredBar] = useState<number | null>(null);
+  const [hoveredPoint, setHoveredPoint] = useState<number | null>(null);
+  const lineChartRef = useRef<HTMLDivElement>(null);
+
   const [rateLimitedDialogOpen, setRateLimitedDialogOpen] = useState(false);
   const [rateLimitedLinks, setRateLimitedLinks] = useState<RateLimitedLink[]>([]);
   const [rateLimitedLoading, setRateLimitedLoading] = useState(false);
@@ -60,7 +53,6 @@ export function Dashboard() {
   const [rateLimitedTotal, setRateLimitedTotal] = useState(0);
   const pageSize = 20;
 
-  // 计算时间范围
   const getDateRange = (range: TimeRange): { start?: string; end?: string; granularity: 'hour' | 'day' } => {
     const today = new Date();
     const end = today.toISOString().split('T')[0];
@@ -68,56 +60,38 @@ export function Dashboard() {
     let granularity: 'hour' | 'day' = 'day';
 
     switch (range) {
-      case 'today':
-        start = end;
-        granularity = 'hour';
-        break;
-      case 'last24h':
-        const yesterday = new Date(today);
-        yesterday.setDate(yesterday.getDate() - 1);
-        start = yesterday.toISOString().split('T')[0];
-        granularity = 'hour';
-        break;
-      case 'thisWeek':
-        const weekStart = new Date(today);
-        // 获取本周一：如果今天是周日(getDay()=0)，则往前推6天；否则往前推(getDay()-1)天
-        const dayOfWeek = today.getDay();
-        const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-        weekStart.setDate(today.getDate() - daysToMonday);
-        start = weekStart.toISOString().split('T')[0];
-        granularity = 'day';
-        break;
-      case 'last7d':
-        const last7d = new Date(today);
-        last7d.setDate(today.getDate() - 7);
-        start = last7d.toISOString().split('T')[0];
-        granularity = 'day';
-        break;
-      case 'thisMonth':
-        const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
-        start = monthStart.toISOString().split('T')[0];
-        granularity = 'day';
-        break;
-      case 'last30d':
-        const last30d = new Date(today);
-        last30d.setDate(today.getDate() - 30);
-        start = last30d.toISOString().split('T')[0];
-        granularity = 'day';
-        break;
-      case 'last90d':
-        const last90d = new Date(today);
-        last90d.setDate(today.getDate() - 90);
-        start = last90d.toISOString().split('T')[0];
-        granularity = 'day';
-        break;
-      default:
-        start = end;
+      case 'today': start = end; granularity = 'hour'; break;
+      case 'last24h': {
+        const d = new Date(today); d.setDate(d.getDate() - 1);
+        start = d.toISOString().split('T')[0]; granularity = 'hour'; break;
+      }
+      case 'thisWeek': {
+        const d = new Date(today);
+        const dow = today.getDay();
+        d.setDate(today.getDate() - (dow === 0 ? 6 : dow - 1));
+        start = d.toISOString().split('T')[0]; break;
+      }
+      case 'last7d': {
+        const d = new Date(today); d.setDate(d.getDate() - 7);
+        start = d.toISOString().split('T')[0]; break;
+      }
+      case 'thisMonth': {
+        const d = new Date(today.getFullYear(), today.getMonth(), 1);
+        start = d.toISOString().split('T')[0]; break;
+      }
+      case 'last30d': {
+        const d = new Date(today); d.setDate(d.getDate() - 30);
+        start = d.toISOString().split('T')[0]; break;
+      }
+      case 'last90d': {
+        const d = new Date(today); d.setDate(d.getDate() - 90);
+        start = d.toISOString().split('T')[0]; break;
+      }
+      default: start = end;
     }
-
     return { start, end, granularity };
   };
 
-  // 加载概览和饼图数据（只在组件挂载时调用）
   const loadOverviewData = async () => {
     setLoading(true);
     try {
@@ -125,427 +99,380 @@ export function Dashboard() {
         statisticsApi.getOverview(),
         statisticsApi.getPlatformInvalidCounts(),
       ]);
-
       setOverview(overviewData);
-      setPlatformCounts(platformData.filter(p => p.count > 0)); // 只显示有数据的平台
+      setPlatformCounts(platformData.filter(p => p.count > 0));
     } catch (error: any) {
-      console.error('加载统计数据失败:', error);
       toast.error('加载统计数据失败: ' + (error.response?.data?.error || error.message));
     } finally {
       setLoading(false);
     }
   };
 
-  // 只加载时间序列数据（在时间范围改变时调用）
+  const loadSystemInfo = async () => {
+    try {
+      const [sysInfo, redis, db] = await Promise.all([
+        systemApi.getSystemInfo(),
+        systemApi.getRedisStats(),
+        systemApi.getDBStats(),
+      ]);
+      setSystemInfo(sysInfo);
+      setRedisStats(redis);
+      setDbStats(db);
+    } catch (error: any) {
+      console.error('加载系统信息失败:', error);
+    }
+  };
+
   const loadTimeSeriesData = async () => {
     setTimeSeriesLoading(true);
     try {
       const dateRange = getDateRange(timeRange);
       const timeSeries = await statisticsApi.getSubmissionTimeSeries(
-        dateRange.start,
-        dateRange.end,
-        dateRange.granularity
+        dateRange.start, dateRange.end, dateRange.granularity
       );
       setTimeSeriesData(timeSeries);
     } catch (error: any) {
-      console.error('加载时间序列数据失败:', error);
       toast.error('加载时间序列数据失败: ' + (error.response?.data?.error || error.message));
     } finally {
       setTimeSeriesLoading(false);
     }
   };
 
-  // 组件挂载时加载概览和饼图数据
-  useEffect(() => {
-    loadOverviewData();
-  }, []);
+  useEffect(() => { loadOverviewData(); loadSystemInfo(); }, []);
+  useEffect(() => { loadTimeSeriesData(); }, [timeRange]);
 
-  // 时间范围改变时只加载时间序列数据
-  useEffect(() => {
-    loadTimeSeriesData();
-  }, [timeRange]);
-
-  // 加载受限链接列表
   const loadRateLimitedLinks = async () => {
     setRateLimitedLoading(true);
     try {
       const result = await linkApi.listRateLimitedLinks(
-        rateLimitedPage,
-        pageSize,
-        selectedPlatform === 'all' ? undefined : selectedPlatform
+        rateLimitedPage, pageSize, selectedPlatform === 'all' ? undefined : selectedPlatform
       );
       setRateLimitedLinks(result.data);
       setRateLimitedTotal(result.total);
     } catch (error: any) {
-      console.error('加载受限链接失败:', error);
       toast.error('加载受限链接失败: ' + (error.response?.data?.error || error.message));
     } finally {
       setRateLimitedLoading(false);
     }
   };
 
-  // 打开弹窗时加载数据
   useEffect(() => {
-    if (rateLimitedDialogOpen) {
-      loadRateLimitedLinks();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (rateLimitedDialogOpen) loadRateLimitedLinks();
   }, [rateLimitedDialogOpen, rateLimitedPage, selectedPlatform]);
 
-  // 清空受限链接
   const handleClearRateLimitedLinks = async () => {
-    if (!confirm('确定要清空所有受限链接吗？清空后这些链接可以重新检测。')) {
-      return;
-    }
-
+    if (!confirm('确定要清空所有受限链接吗？')) return;
     try {
       await linkApi.clearRateLimitedLinks();
       toast.success('已清空所有受限链接');
-      // 重新加载数据
       await loadRateLimitedLinks();
-      // 重新加载概览数据以更新统计
       await loadOverviewData();
     } catch (error: any) {
-      console.error('清空受限链接失败:', error);
       toast.error('清空受限链接失败: ' + (error.response?.data?.error || error.message));
     }
   };
 
-  // 平台筛选改变时重置页码
-  useEffect(() => {
-    if (rateLimitedDialogOpen) {
-      setRateLimitedPage(1);
-    }
-  }, [selectedPlatform, rateLimitedDialogOpen]);
+  useEffect(() => { if (rateLimitedDialogOpen) setRateLimitedPage(1); }, [selectedPlatform, rateLimitedDialogOpen]);
 
-  const barChartData = platformCounts.map(item => ({
-    platform: item.platform,
-    count: item.count,
-    fill: `var(--color-${item.platform})`,
-  }));
+  const maxPlatformCount = Math.max(...platformCounts.map(p => p.count), 1);
 
-  const chartConfig = createChartConfig(platformCounts.map(p => p.platform));
-
-  // 折线图配置
-  const lineChartConfig: ChartConfig = {
-    count: {
-      label: '提交记录数',
-      color: 'hsl(var(--chart-1))',
-    },
+  const formatTimeLabel = (dateStr: string, range: TimeRange): string => {
+    try {
+      let date: Date;
+      if (dateStr.includes('T')) date = new Date(dateStr);
+      else if (dateStr.includes(' ')) date = new Date(dateStr.replace(' ', 'T') + '+08:00');
+      else date = new Date(dateStr + 'T00:00:00+08:00');
+      if (range === 'today' || range === 'last24h') {
+        return date.getHours().toString().padStart(2, '0') + ':00';
+      }
+      return (date.getMonth() + 1).toString().padStart(2, '0') + '-' + date.getDate().toString().padStart(2, '0');
+    } catch { return dateStr; }
   };
 
-  // 格式化时间显示
-  const formatTimeLabel = (dateStr: string, timeRange: TimeRange): string => {
-    if (timeRange === 'today' || timeRange === 'last24h') {
-      // 按小时显示，格式：HH:00
-      try {
-        // 处理不同的时间格式：2025-11-22T00:00:00+08:00 或 2025-11-22 00:00:00
-        let date: Date;
-        if (dateStr.includes('T')) {
-          date = new Date(dateStr);
-        } else if (dateStr.includes(' ')) {
-          // 格式：2025-11-22 00:00:00
-          date = new Date(dateStr.replace(' ', 'T') + '+08:00');
-        } else {
-          // 格式：2025-11-22
-          date = new Date(dateStr + 'T00:00:00+08:00');
-        }
-        const hours = date.getHours().toString().padStart(2, '0');
-        return `${hours}:00`;
-      } catch {
-        return dateStr;
-      }
-    } else {
-      // 按天显示，格式：MM-DD
-      try {
-        // 处理不同的时间格式
-        let date: Date;
-        if (dateStr.includes('T')) {
-          date = new Date(dateStr);
-        } else if (dateStr.includes(' ')) {
-          date = new Date(dateStr.split(' ')[0]);
-        } else {
-          date = new Date(dateStr);
-        }
-        const month = (date.getMonth() + 1).toString().padStart(2, '0');
-        const day = date.getDate().toString().padStart(2, '0');
-        return `${month}-${day}`;
-      } catch {
-        return dateStr;
-      }
-    }
-  };
-
-  const lineChartData = timeSeriesData.map(item => ({
-    date: item.date,
-    displayDate: formatTimeLabel(item.date, timeRange),
-    count: item.count,
-  }));
+  const linePoints = timeSeriesData.map((item, i, arr) => {
+    const x = arr.length > 1 ? (i / (arr.length - 1)) * 740 + 30 : 400;
+    const maxVal = Math.max(...arr.map(d => d.count), 1);
+    const y = 260 - (item.count / maxVal) * 220;
+    return { x, y, count: item.count, label: formatTimeLabel(item.date, timeRange) };
+  });
 
   return (
-    <div className="space-y-8">
-
-      {/* 统计卡片 */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">总失效链接数</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {loading ? (
-              <div className="text-2xl font-bold">加载中...</div>
-            ) : (
-              <>
-                <div className="text-2xl font-bold">{overview?.total_invalid_links.toLocaleString() || 0}</div>
-                <p className="text-xs text-muted-foreground">累计失效链接总数</p>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">总提交记录数</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {loading ? (
-              <div className="text-2xl font-bold">加载中...</div>
-            ) : (
-              <>
-                <div className="text-2xl font-bold">{overview?.total_submissions.toLocaleString() || 0}</div>
-                <p className="text-xs text-muted-foreground">所有提交记录总数</p>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">已完成检测</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {loading ? (
-              <div className="text-2xl font-bold">加载中...</div>
-            ) : (
-              <>
-                <div className="text-2xl font-bold">{overview?.completed_submissions.toLocaleString() || 0}</div>
-                <p className="text-xs text-muted-foreground">已完成检测的记录数</p>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">待检测记录</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {loading ? (
-              <div className="text-2xl font-bold">加载中...</div>
-            ) : (
-              <>
-                <div className="text-2xl font-bold">{overview?.pending_submissions.toLocaleString() || 0}</div>
-                <p className="text-xs text-muted-foreground">等待检测的记录数</p>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card 
-          className="cursor-pointer hover:bg-accent/50 transition-colors"
-          onClick={() => setRateLimitedDialogOpen(true)}
-        >
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">受限检测链接数</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {loading ? (
-              <div className="text-2xl font-bold">加载中...</div>
-            ) : (
-              <>
-                <div className="text-2xl font-bold">{overview?.rate_limited_links.toLocaleString() || 0}</div>
-                <p className="text-xs text-muted-foreground">可能被限制导致检测无效的链接数</p>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">总定时任务数</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {loading ? (
-              <div className="text-2xl font-bold">加载中...</div>
-            ) : (
-              <>
-                <div className="text-2xl font-bold">{overview?.total_scheduled_tasks.toLocaleString() || 0}</div>
-                <p className="text-xs text-muted-foreground">所有定时任务总数</p>
-              </>
-            )}
-          </CardContent>
-        </Card>
+    <div style={{ maxWidth: 1280, margin: '0 auto', padding: '28px 32px 40px' }}>
+      {/* Page Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 22 }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: 28, letterSpacing: '-0.02em' }}>系统仪表盘</h1>
+          <p style={{ margin: '6px 0 0', color: '#6b7280', fontSize: 14 }}>
+            查看链接检测、提交记录、系统资源和服务连接状态
+          </p>
+        </div>
+        <TimeRangeSelector value={timeRange} onChange={setTimeRange} />
       </div>
 
-      {/* 统计图表：柱状图和折线图 */}
-      <div className="grid gap-4 md:grid-cols-2">
-        {/* 柱状图：各大网盘失效记录数 */}
-        <Card>
-          <CardHeader>
-            <CardTitle>各大网盘失效记录数</CardTitle>
-            <CardDescription>按平台统计的失效链接分布</CardDescription>
-          </CardHeader>
-          <CardContent className="flex items-center justify-center">
-            {loading ? (
-              <div className="flex items-center justify-center h-[250px] w-full">加载中...</div>
-            ) : barChartData.length === 0 ? (
-              <div className="flex items-center justify-center h-[250px] w-full text-muted-foreground">
-                暂无数据
-              </div>
-            ) : (
-              <ChartContainer config={chartConfig} className="h-[250px] w-full flex items-center justify-center">
-                <BarChart data={barChartData}>
-                  <CartesianGrid vertical={false} />
-                  <XAxis
-                    dataKey="platform"
-                    tickLine={false}
-                    tickMargin={10}
-                    axisLine={false}
-                    tickFormatter={(value) =>
-                      chartConfig[value as keyof typeof chartConfig]?.label || value
-                    }
-                  />
-                  <YAxis tick={{ fontSize: 12 }} />
-                  <ChartTooltip
-                    cursor={false}
-                    content={<ChartTooltipContent hideLabel />}
-                  />
-                  <Bar
-                    dataKey="count"
-                    strokeWidth={2}
-                    radius={8}
-                    activeBar={({ ...props }) => {
-                      return (
-                        <Rectangle
-                          {...props}
-                          fillOpacity={0.8}
-                          strokeDasharray={4}
-                          strokeDashoffset={4}
-                        />
-                      );
-                    }}
-                  >
-                    {barChartData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.fill} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ChartContainer>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* 折线图：各个时间段提交记录数 */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
-            <div>
-              <CardTitle>提交记录趋势</CardTitle>
-              <CardDescription>按时间统计的提交记录数量</CardDescription>
+      {/* KPI Cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 18 }}>
+        {[
+          { label: '总失效链接数', value: overview?.total_invalid_links ?? 0, color: 'orange', badge: '需关注', badgeColor: '#f97316' },
+          { label: '总提交记录数', value: overview?.total_submissions ?? 0, color: 'blue', badge: '稳定', badgeColor: '#2563eb' },
+          { label: '已完成检测', value: overview?.completed_submissions ?? 0, color: 'green', badge: '100%', badgeColor: '#16a34a' },
+          { label: '受限检测链接数', value: overview?.rate_limited_links ?? 0, color: 'purple', badge: '需处理', badgeColor: '#7c3aed', onClick: () => setRateLimitedDialogOpen(true) },
+        ].map((kpi, i) => (
+          <div
+            key={i}
+            onClick={kpi.onClick}
+            style={{
+              background: '#fff', border: '1px solid #e5e7eb', borderRadius: 18,
+              padding: 20, position: 'relative', overflow: 'hidden',
+              boxShadow: '0 8px 24px rgba(15,23,42,0.06)',
+              cursor: kpi.onClick ? 'pointer' : 'default',
+            }}
+          >
+            <div style={{
+              position: 'absolute', right: -30, top: -30, width: 110, height: 110, borderRadius: '50%',
+              background: kpi.color === 'orange' ? 'rgba(249,115,22,0.1)' : kpi.color === 'green' ? 'rgba(22,163,74,0.1)' : kpi.color === 'purple' ? 'rgba(124,58,237,0.1)' : 'rgba(37,99,235,0.08)',
+            }} />
+            <div style={{ color: '#6b7280', fontSize: 13, marginBottom: 8 }}>{kpi.label}</div>
+            <div style={{ fontSize: 30, fontWeight: 800, letterSpacing: '-0.03em', marginBottom: 8 }}>
+              {loading ? '...' : kpi.value.toLocaleString()}
             </div>
-            <TimeRangeSelector
-              value={timeRange}
-              onChange={setTimeRange}
-            />
-          </CardHeader>
-          <CardContent className="flex items-center justify-center">
-            {timeSeriesLoading ? (
-              <div className="flex items-center justify-center h-[250px] w-full">加载中...</div>
-            ) : lineChartData.length === 0 ? (
-              <div className="flex items-center justify-center h-[250px] w-full text-muted-foreground">
-                暂无数据
-              </div>
-            ) : (
-              <ChartContainer config={lineChartConfig} className="h-[250px] w-full flex items-center justify-center">
-                <LineChart
-                  accessibilityLayer
-                  data={lineChartData}
-                  margin={{
-                    left: 12,
-                    right: 12,
-                  }}
-                >
-                  <CartesianGrid vertical={false} />
-                  <XAxis
-                    dataKey="displayDate"
-                    tickLine={false}
-                    axisLine={false}
-                    tickMargin={8}
-                    tick={{ fontSize: 12 }}
-                    angle={timeRange === 'today' || timeRange === 'last24h' ? 0 : -45}
-                    textAnchor={timeRange === 'today' || timeRange === 'last24h' ? 'middle' : 'end'}
-                    height={timeRange === 'today' || timeRange === 'last24h' ? 40 : 60}
-                  />
-                  <ChartTooltip
-                    cursor={false}
-                    content={<ChartTooltipContent hideLabel />}
-                  />
-                  <Line
-                    dataKey="count"
-                    type="natural"
-                    stroke="var(--color-count)"
-                    strokeWidth={2}
-                    dot={false}
-                  />
-                </LineChart>
-              </ChartContainer>
-            )}
-          </CardContent>
-        </Card>
+            <div style={{ color: '#6b7280', fontSize: 13, display: 'flex', gap: 6, alignItems: 'center' }}>
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', borderRadius: 999, padding: '2px 8px',
+                fontSize: 12, fontWeight: 600, color: kpi.badgeColor,
+                background: kpi.badgeColor + '18',
+              }}>{kpi.badge}</span>
+              {kpi.label === '受限检测链接数' ? '被限制的链接数' : kpi.label === '总失效链接数' ? '累计失效链接总数' : kpi.label === '总提交记录数' ? '所有提交记录总数' : '已完成检测记录数'}
+            </div>
+          </div>
+        ))}
       </div>
 
-      {/* 受限链接明细弹窗 */}
+      {/* Charts */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1.25fr 0.75fr', gap: 18, marginBottom: 18 }}>
+        {/* Line Chart */}
+        <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 18, padding: 20, boxShadow: '0 8px 24px rgba(15,23,42,0.06)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>提交记录趋势</h2>
+              <p style={{ margin: '4px 0 0', color: '#6b7280', fontSize: 13 }}>按时间统计提交记录数量</p>
+            </div>
+          </div>
+          <div
+            ref={lineChartRef}
+            style={{
+              width: '100%', height: 300, borderRadius: 12, overflow: 'visible', position: 'relative',
+              background: 'linear-gradient(to bottom, transparent 24%, #eef0f4 25%, transparent 26%), linear-gradient(to bottom, transparent 49%, #eef0f4 50%, transparent 51%), linear-gradient(to bottom, transparent 74%, #eef0f4 75%, transparent 76%)',
+            }}
+          >
+            {timeSeriesLoading ? (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#6b7280' }}>加载中...</div>
+            ) : linePoints.length === 0 ? (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#9ca3af' }}>暂无数据</div>
+            ) : (
+              <svg viewBox="0 0 800 300" preserveAspectRatio="none" style={{ width: '100%', height: '100%', overflow: 'visible' }}>
+                <polyline points={linePoints.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#ef6b4a" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+                {linePoints.map((p, i) => (
+                  <g key={i} onMouseEnter={() => setHoveredPoint(i)} onMouseLeave={() => setHoveredPoint(null)} style={{ cursor: 'pointer' }}>
+                    <circle cx={p.x} cy={p.y} r={hoveredPoint === i ? 8 : 5} fill="#ef6b4a" stroke="white" strokeWidth="2" style={{ transition: 'r 0.15s' }} />
+                    {hoveredPoint === i && (
+                      <g>
+                        <rect x={p.x - 40} y={p.y - 38} width="80" height="26" rx="6" fill="#111827" />
+                        <text x={p.x} y={p.y - 21} textAnchor="middle" fill="white" fontSize="12" fontWeight="600">{p.count.toLocaleString()} 条</text>
+                        <text x={p.x} y={p.y - 46} textAnchor="middle" fill="#6b7280" fontSize="11">{p.label}</text>
+                      </g>
+                    )}
+                  </g>
+                ))}
+                {linePoints.filter((_, i) => {
+                  const step = Math.max(1, Math.floor(linePoints.length / 7));
+                  return i % step === 0 || i === linePoints.length - 1;
+                }).map((p, i) => (
+                  <text key={i} x={p.x} y={285} textAnchor="middle" fill="#6b7280" fontSize="12">{p.label}</text>
+                ))}
+              </svg>
+            )}
+          </div>
+        </div>
+
+        {/* Bar Chart */}
+        <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 18, padding: 20, boxShadow: '0 8px 24px rgba(15,23,42,0.06)' }}>
+          <div style={{ marginBottom: 16 }}>
+            <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>各大网盘失效记录数</h2>
+            <p style={{ margin: '4px 0 0', color: '#6b7280', fontSize: 13 }}>按平台统计失效链接分布</p>
+          </div>
+          <div style={{
+            height: 300, display: 'flex', alignItems: 'flex-end', gap: 14, paddingTop: 30, borderRadius: 12, position: 'relative',
+            background: 'linear-gradient(to bottom, transparent 24%, #eef0f4 25%, transparent 26%), linear-gradient(to bottom, transparent 49%, #eef0f4 50%, transparent 51%), linear-gradient(to bottom, transparent 74%, #eef0f4 75%, transparent 76%)',
+          }}>
+            {loading ? (
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6b7280' }}>加载中...</div>
+            ) : platformCounts.length === 0 ? (
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9ca3af' }}>暂无数据</div>
+            ) : platformCounts.map((item, i) => {
+              const barHeight = Math.max((item.count / maxPlatformCount) * 220, 4);
+              return (
+                <div
+                  key={item.platform}
+                  style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, position: 'relative' }}
+                  onMouseEnter={() => setHoveredBar(i)}
+                  onMouseLeave={() => setHoveredBar(null)}
+                >
+                  {/* Tooltip */}
+                  {hoveredBar === i && (
+                    <div style={{
+                      position: 'absolute', top: -8, left: '50%', transform: 'translateX(-50%)',
+                      background: '#111827', color: 'white', padding: '6px 12px', borderRadius: 8,
+                      fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', zIndex: 10,
+                      boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                    }}>
+                      {item.count.toLocaleString()} 条
+                      <div style={{
+                        position: 'absolute', bottom: -5, left: '50%', transform: 'translateX(-50%)',
+                        width: 0, height: 0, borderLeft: '5px solid transparent', borderRight: '5px solid transparent',
+                        borderTop: '5px solid #111827',
+                      }} />
+                    </div>
+                  )}
+                  {/* Value label on top */}
+                  <div style={{ fontSize: 11, fontWeight: 600, color: '#374151', textAlign: 'center' }}>
+                    {item.count.toLocaleString()}
+                  </div>
+                  {/* Bar */}
+                  <div style={{
+                    width: '100%', maxWidth: 42, borderRadius: '10px 10px 4px 4px',
+                    height: `${barHeight}px`,
+                    background: BAR_COLORS[i % BAR_COLORS.length],
+                    transition: 'height 0.3s, opacity 0.15s',
+                    opacity: hoveredBar === i ? 0.85 : 1,
+                    cursor: 'pointer',
+                  }} />
+                  <div style={{ width: '100%', textAlign: 'center', fontSize: 12, color: '#6b7280', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {PLATFORM_NAMES[item.platform] || item.platform}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* Status Grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 18 }}>
+        {/* Server */}
+        <StatusCard title="服务器状态" subtitle="基础运行信息" badge="正常" badgeColor="#16a34a" loading={loading}>
+          {systemInfo && (
+            <>
+              <InfoRow label="主机名" value={systemInfo.hostname} />
+              <InfoRow label="系统" value={`${systemInfo.os}/${systemInfo.arch}`} />
+              <InfoRow label="运行时间" value={systemInfo.uptime} />
+              <InfoRow label="Go 版本" value={systemInfo.go_version} />
+              <InfoRow label="Goroutines" value={String(systemInfo.goroutines)} />
+            </>
+          )}
+        </StatusCard>
+
+        {/* CPU & Memory */}
+        <StatusCard title="CPU & 内存" subtitle="资源使用情况">
+          {systemInfo && (
+            <>
+              <InfoRow label="CPU 核心数" value={String(systemInfo.cpu_count)} />
+              <div>
+                <InfoRow label="内存使用率" value={`${systemInfo.memory_usage.toFixed(1)}%`} />
+                <ProgressBar percent={systemInfo.memory_usage} color="#2563eb" />
+              </div>
+              <InfoRow label="已用内存" value={`${formatBytes(systemInfo.memory_used)} / ${formatBytes(systemInfo.memory_total)}`} />
+            </>
+          )}
+        </StatusCard>
+
+        {/* Disk */}
+        <StatusCard title="磁盘使用" subtitle="当前磁盘容量">
+          {systemInfo && systemInfo.disk_total > 0 ? (
+            <>
+              <div>
+                <InfoRow label="磁盘使用率" value={`${systemInfo.disk_usage.toFixed(1)}%`} />
+                <ProgressBar percent={systemInfo.disk_usage} color="#f97316" />
+              </div>
+              <InfoRow label="已使用" value={formatBytes(systemInfo.disk_used)} />
+              <InfoRow label="总容量" value={formatBytes(systemInfo.disk_total)} />
+            </>
+          ) : (
+            <div style={{ color: '#9ca3af', fontSize: 14 }}>磁盘信息不可用</div>
+          )}
+        </StatusCard>
+
+        {/* Redis */}
+        <StatusCard title="Redis 缓存" subtitle="缓存服务状态" badge={redisStats?.connected ? '已连接' : '未连接'} badgeColor={redisStats?.connected ? '#16a34a' : '#ef4444'}>
+          {redisStats?.connected ? (
+            <>
+              <InfoRow label="版本" value={redisStats.version} />
+              <InfoRow label="Key 总数" value={redisStats.total_keys.toLocaleString()} />
+              <InfoRow label="内存占用" value={redisStats.used_memory_human} />
+              <InfoRow label="命中率" value={redisStats.hit_rate} />
+              <InfoRow label="连接数" value={String(redisStats.connected_clients)} />
+            </>
+          ) : (
+            <div style={{ color: '#9ca3af', fontSize: 14 }}>{redisStats === null ? '加载中...' : '未连接'}</div>
+          )}
+        </StatusCard>
+
+        {/* Database */}
+        <StatusCard title="数据库" subtitle={`${dbStats?.type?.toUpperCase() || 'MySQL'} 连接状态`} badge={dbStats?.connected ? '已连接' : '未连接'} badgeColor={dbStats?.connected ? '#16a34a' : '#ef4444'}>
+          {dbStats?.connected ? (
+            <>
+              <InfoRow label="类型" value={dbStats.type.toUpperCase()} />
+              <InfoRow label="总大小" value={dbStats.total_size || 'N/A'} />
+              <InfoRow label="表数量" value={String(dbStats.tables?.length || 0)} />
+            </>
+          ) : (
+            <div style={{ color: '#9ca3af', fontSize: 14 }}>{dbStats === null ? '加载中...' : '未连接'}</div>
+          )}
+        </StatusCard>
+
+        {/* Tasks */}
+        <StatusCard title="检测任务" subtitle="任务运行概览" badge="运行中" badgeColor="#f97316">
+          <InfoRow label="待检测记录" value={String(overview?.pending_submissions ?? 0)} />
+          <InfoRow label="定时任务数" value={String(overview?.total_scheduled_tasks ?? 0)} />
+          <InfoRow label="总检测数" value={String(overview?.completed_submissions ?? 0)} />
+        </StatusCard>
+      </div>
+
+      {/* Footer */}
+      <div style={{ color: '#6b7280', fontSize: 13, display: 'flex', justifyContent: 'center', gap: 12, padding: '28px 0 8px' }}>
+        <span>PanCheck v1.0</span>
+        <span>|</span>
+        <a href="https://github.com/Lampon/PanCheck" target="_blank" rel="noopener noreferrer" style={{ color: '#6b7280', textDecoration: 'none' }}>GitHub</a>
+      </div>
+
+      {/* Rate Limited Dialog */}
       <Dialog open={rateLimitedDialogOpen} onOpenChange={setRateLimitedDialogOpen}>
         <DialogContent className="max-w-6xl max-h-[80vh] flex flex-col">
           <DialogHeader>
             <DialogTitle>受限检测链接明细</DialogTitle>
-            <DialogDescription>
-              显示所有可能被限制导致检测无效的链接，清空后可以重新检测这些链接
-            </DialogDescription>
+            <DialogDescription>显示所有可能被限制导致检测无效的链接</DialogDescription>
           </DialogHeader>
-          
           <div className="flex items-center justify-between gap-4 mb-4">
             <div className="flex items-center gap-2">
               <span className="text-sm text-muted-foreground">平台筛选：</span>
               <Select value={selectedPlatform} onValueChange={setSelectedPlatform}>
-                <SelectTrigger className="w-[180px]">
-                  <SelectValue placeholder="选择平台" />
-                </SelectTrigger>
+                <SelectTrigger className="w-[180px]"><SelectValue placeholder="选择平台" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">全部平台</SelectItem>
                   {Object.entries(PLATFORM_NAMES).map(([key, name]) => (
-                    <SelectItem key={key} value={key}>
-                      {name}
-                    </SelectItem>
+                    <SelectItem key={key} value={key}>{name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
-            <Button
-              variant="destructive"
-              onClick={handleClearRateLimitedLinks}
-              disabled={rateLimitedLoading || rateLimitedTotal === 0}
-            >
+            <Button variant="destructive" onClick={handleClearRateLimitedLinks} disabled={rateLimitedLoading || rateLimitedTotal === 0}>
               清空所有
             </Button>
           </div>
-
           <div className="flex-1 overflow-auto">
             {rateLimitedLoading ? (
               <div className="flex items-center justify-center h-[300px]">加载中...</div>
             ) : rateLimitedLinks.length === 0 ? (
-              <div className="flex items-center justify-center h-[300px] text-muted-foreground">
-                暂无数据
-              </div>
+              <div className="flex items-center justify-center h-[300px] text-muted-foreground">暂无数据</div>
             ) : (
               <Table>
                 <TableHeader>
@@ -562,60 +489,69 @@ export function Dashboard() {
                     <TableRow key={link.id}>
                       <TableCell>{PLATFORM_NAMES[link.platform] || link.platform}</TableCell>
                       <TableCell className="max-w-[500px] break-all">
-                        <a
-                          href={link.link}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-primary hover:underline"
-                          title={link.link}
-                        >
-                          {link.link}
-                        </a>
+                        <a href={link.link} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">{link.link}</a>
                       </TableCell>
-                      <TableCell className="max-w-[300px] break-words" title={link.failure_reason}>
-                        {link.failure_reason || '-'}
-                      </TableCell>
-                      <TableCell>
-                        {link.check_duration ? `${link.check_duration}ms` : '-'}
-                      </TableCell>
-                      <TableCell>
-                        {new Date(link.created_at).toLocaleString('zh-CN')}
-                      </TableCell>
+                      <TableCell className="max-w-[300px] break-words">{link.failure_reason || '-'}</TableCell>
+                      <TableCell>{link.check_duration ? `${link.check_duration}ms` : '-'}</TableCell>
+                      <TableCell>{new Date(link.created_at).toLocaleString('zh-CN')}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
             )}
           </div>
-
           <DialogFooter className="flex items-center justify-between">
-            <div className="text-sm text-muted-foreground">
-              共 {rateLimitedTotal} 条记录
-            </div>
+            <div className="text-sm text-muted-foreground">共 {rateLimitedTotal} 条记录</div>
             <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setRateLimitedPage(p => Math.max(1, p - 1))}
-                disabled={rateLimitedPage === 1 || rateLimitedLoading}
-              >
-                上一页
-              </Button>
-              <span className="text-sm">
-                第 {rateLimitedPage} / {Math.ceil(rateLimitedTotal / pageSize)} 页
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setRateLimitedPage(p => p + 1)}
-                disabled={rateLimitedPage >= Math.ceil(rateLimitedTotal / pageSize) || rateLimitedLoading}
-              >
-                下一页
-              </Button>
+              <Button variant="outline" size="sm" onClick={() => setRateLimitedPage(p => Math.max(1, p - 1))} disabled={rateLimitedPage === 1 || rateLimitedLoading}>上一页</Button>
+              <span className="text-sm">第 {rateLimitedPage} / {Math.ceil(rateLimitedTotal / pageSize)} 页</span>
+              <Button variant="outline" size="sm" onClick={() => setRateLimitedPage(p => p + 1)} disabled={rateLimitedPage >= Math.ceil(rateLimitedTotal / pageSize) || rateLimitedLoading}>下一页</Button>
             </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function StatusCard({ title, subtitle, badge, badgeColor, loading, children }: {
+  title: string; subtitle: string; badge?: string; badgeColor?: string; loading?: boolean; children: React.ReactNode;
+}) {
+  return (
+    <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 18, padding: 20, boxShadow: '0 8px 24px rgba(15,23,42,0.06)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>{title}</h2>
+          <p style={{ margin: '4px 0 0', color: '#6b7280', fontSize: 13 }}>{subtitle}</p>
+        </div>
+        {badge && (
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', borderRadius: 999, padding: '2px 8px',
+            fontSize: 12, fontWeight: 600, color: badgeColor || '#16a34a',
+            background: (badgeColor || '#16a34a') + '18',
+          }}>{badge}</span>
+        )}
+      </div>
+      <div style={{ display: 'grid', gap: 12 }}>
+        {loading ? <div style={{ color: '#6b7280', fontSize: 14 }}>加载中...</div> : children}
+      </div>
+    </div>
+  );
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 14 }}>
+      <span style={{ color: '#6b7280' }}>{label}</span>
+      <strong style={{ fontWeight: 600, textAlign: 'right' as const }}>{value}</strong>
+    </div>
+  );
+}
+
+function ProgressBar({ percent, color }: { percent: number; color: string }) {
+  return (
+    <div style={{ height: 9, background: '#eef0f4', borderRadius: 999, overflow: 'hidden', marginTop: 8 }}>
+      <div style={{ height: '100%', width: `${Math.min(percent, 100)}%`, background: color, borderRadius: 'inherit', transition: 'width 0.3s' }} />
     </div>
   );
 }

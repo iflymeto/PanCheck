@@ -100,6 +100,7 @@ func main() {
 	})
 	statisticsHandler := handler.NewStatisticsHandler()
 	taskHandler := handler.NewScheduledTaskHandler(taskService, schedulerService, taskScheduler)
+	systemHandler := handler.NewSystemHandler(cacheRepo)
 
 	// 设置Gin模式
 	if config.AppConfig.Server.Mode == "release" {
@@ -161,6 +162,12 @@ func main() {
 			apiAuth.POST("/scheduled-tasks/:id/disable", taskHandler.DisableTask)
 			apiAuth.GET("/scheduled-tasks/:id/executions", taskHandler.GetTaskExecutions)
 			apiAuth.GET("/scheduled-tasks/tags", taskHandler.GetAllTags)
+
+			// 系统信息相关接口
+			apiAuth.GET("/system/info", systemHandler.GetSystemInfo)
+			apiAuth.GET("/system/redis-stats", systemHandler.GetRedisStats)
+			apiAuth.GET("/system/db-stats", systemHandler.GetDBStats)
+			apiAuth.POST("/system/redis-test", systemHandler.TestRedisConnection)
 		}
 	}
 
@@ -292,17 +299,31 @@ func initCheckers(factory *checker.CheckerFactory, checkerConfig config.CheckerC
 	registerChecker("cmcc")
 }
 
-// loadRedisConfig 从数据库加载Redis配置，如果不存在则使用配置文件中的配置
+// loadRedisConfig 从数据库加载Redis配置，与环境变量/配置文件合并
 func loadRedisConfig(settingsRepo *repository.SettingsRepository) config.RedisConfig {
+	baseConfig := config.AppConfig.Redis
+
 	setting, err := settingsRepo.GetByKey("redis_config")
 	if err == nil && setting != nil {
-		var redisConfig config.RedisConfig
-		if err := json.Unmarshal([]byte(setting.Value), &redisConfig); err == nil {
-			return redisConfig
+		var dbConfig config.RedisConfig
+		if err := json.Unmarshal([]byte(setting.Value), &dbConfig); err == nil {
+			baseConfig.Enabled = dbConfig.Enabled
+			baseConfig.InvalidTTL = dbConfig.InvalidTTL
+			if dbConfig.Host != "" {
+				baseConfig.Host = dbConfig.Host
+			}
+			if dbConfig.Port != 0 {
+				baseConfig.Port = dbConfig.Port
+			}
+			if dbConfig.Username != "" {
+				baseConfig.Username = dbConfig.Username
+			}
+			if dbConfig.Password != "" {
+				baseConfig.Password = dbConfig.Password
+			}
 		}
 	}
-	// 使用配置文件中的配置
-	return config.AppConfig.Redis
+	return baseConfig
 }
 
 // loadPlatformTTLMap 从数据库加载各平台的缓存TTL配置

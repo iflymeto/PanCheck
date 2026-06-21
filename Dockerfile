@@ -28,6 +28,9 @@ RUN pnpm run build
 # ====================================================================
 FROM golang:1.25-alpine AS backend-builder
 
+# 替换 Alpine 源为国内镜像
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
+
 # 安装构建工具
 RUN apk add --no-cache gcc g++ musl-dev
 
@@ -38,6 +41,7 @@ WORKDIR /app/backend
 COPY go.mod go.sum ./
 
 # 下载 Go 依赖
+ENV GOPROXY=https://goproxy.cn,direct
 RUN go mod download
 
 # 复制后端源代码
@@ -53,6 +57,9 @@ RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o main ./cmd/api
 # 第三阶段：最终运行镜像
 # ====================================================================
 FROM alpine:latest
+
+# 替换 Alpine 源为国内镜像
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
 
 # 安装必要的包
 RUN apk --no-cache add ca-certificates tzdata libstdc++ libgcc
